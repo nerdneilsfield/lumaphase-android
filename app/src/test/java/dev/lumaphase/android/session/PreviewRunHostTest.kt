@@ -263,6 +263,16 @@ class PreviewRunHostTest {
         assertTrue(effects.seals.isEmpty())
         assertEquals(1, runHost.drainCompletions)
         assertFalse(runHost.canProduceFrames)
+
+        // A host that binds after the session-level completion must not revive the run.
+        val late = Recorder()
+        runHost.bind(late)
+        runHost.onHostStarted(hasVisibleTarget = true)
+        assertFalse(runHost.canProduceFrames)
+        assertEquals(0, late.framesStarted)
+        assertEquals(0, late.displayRequests)
+        assertTrue(late.seals.isEmpty())
+        assertEquals(1, runHost.drainCompletions)
     }
 
     @Test

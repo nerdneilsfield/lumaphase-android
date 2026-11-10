@@ -441,6 +441,10 @@ class SessionController(
         val neverResolved = pendingFrames.filter { it.lastResult == null }
         for (state in neverResolved) {
             state.reasonAtClose = UnconfirmedReason.PENDING_AT_SESSION_CLOSE
+            // A frame that never resolved is not a closing diagnostic: it goes through the
+            // bounded queue like every other record. If the queue is full at this point the
+            // record is counted as lost and the session is INCOMPLETE, instead of growing a
+            // close-only tail with one record per unresolved frame.
             appendDisplay(
                 displayEvent(
                     identity = state.identity,
@@ -455,7 +459,6 @@ class SessionController(
                     result = null,
                     explicitReason = UnconfirmedReason.PENDING_AT_SESSION_CLOSE,
                 ),
-                atClose = true,
             )
         }
 
@@ -494,7 +497,9 @@ class SessionController(
         )
 
         // A write failure is reported through the log itself; the session is still sealed so
-        // the failure surface can tell the operator that the package is incomplete.
+        // the failure surface can tell the operator that the package is incomplete. A writer
+        // that cannot finish is latched into the same writeFailure, so the sealed session and
+        // its data_integrity see it as well.
         eventLog.closeAndDrain()
     }
 
@@ -625,22 +630,11 @@ class SessionController(
                 endActiveSegmentLocked(SegmentEndReason.LOG_OVERFLOW)
             } else {
                 // A file that cannot be written is not an overflow, so it must not be reported
-                // as one. It is a general failure of the session's own log, reported with the
-                // contract's generic reason and diagnosed as operation=log_write.
+                // as one. It is a general failure of the session's own log. It cannot be
+                // recorded as a configuration event: the writer is exactly what failed, so any
+                // such event would be refused. The real, independent evidence is the log's
+                // writeFailure string and the resulting INCOMPLETE integrity.
                 endActiveSegmentLocked(SegmentEndReason.RENDER_FAILURE)
-                appendConfiguration(
-                    configurationEvent(
-                        ConfigurationEventType.RENDER_FAILURE,
-                        activeSegment?.segmentId,
-                        mapOf(
-                            "native_frame_id" to null,
-                            "render_seq" to null,
-                            "operation" to "log_write",
-                            "error_code" to null,
-                            "message" to failure,
-                        ),
-                    ),
-                )
             }
             true
         }

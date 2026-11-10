@@ -76,6 +76,8 @@ T2 窄复审已返回，四项全部 ADDRESSED，最终文件哈希及测试/APK
 
 ### T4：会话、分段、日志与导出
 
+最终软件复核已接受：报告 `/tmp/lumaphase-android-t4-final-review.md`，独立作者核对wiring L1/L2/L4/L5/L6及日志D7-D10，spec/quality通过。协调者读取完整报告并独立核对原仓库81 tests、0 failures/errors/skipped；APK SHA-256 `dcba0971ec30fce43b479c7fbbf27b1e855c3eba04d4e7d1d71032ee77753005`。剩余四个源码/测试文件按整文件提交。此接受仅指原单排的软件实现与构建，不包括真机Activity/Surface时序、SAF与production JsonWriter字节；writer永不结束、被拒绝包内关闭诊断时序和恢复原因歧义保留报告。CR-001为独立新增任务，不替代原功能或既有验证限制。
+
 生命周期复核 `/tmp/lumaphase-android-t4-lifecycle-review.md`：D1/D5/D13和正常首段原因通过，D2/D4/D6仍有真实接线缺口L1（新view绕过owner排空/故障状态）、L2（旧Activity未解绑effects），另有恢复顺序/首段前暂停/封存后重建边界。改变负责人：原审阅者 tab `b0f15fd7-7f5a-48b4-935d-561ee2cae54c` 接手窄修复并成为唯一作者；原实现者暂停写入。仅修接线及直接相关边界，SessionLog/Exporter/Json和D7-D10仍留下一任务。要求验证 completion落在unbind/bind之间及新view生命周期入口，而非仅先bind再fire。T4未接受未提交。
 
 生命周期子任务已报告（`task_108bf797860f` / `ctx_4a3e79e38833`）：新增 PreviewRunHost 单一调度入口及8个外部事件顺序测试；协调者读取代码/报告并核对70 tests零失败/错误/跳过，APK SHA-256 `48e416daa1e826f8f28ead74aa88defc37c6ae9630f8b805a2d876bcf479a648`。已派只读窄复核 D1-D6+D13，重点 host测试与Android实际接线、旧宿主和drain重建；D7-D10日志收尾未动、仍待下一任务。尚未接受或提交T4。

@@ -41,8 +41,8 @@ data class LogLoss(
  * different failure: it is latched separately, counted, and reported through [writeFailure],
  * and it stops the writer instead of silently dropping everything that follows.
  *
- * The two events that close a session are queued on an unbounded tail so they are written even
- * if the bounded queue is still full.
+ * The two events that close a session are queued on a small fixed tail so they are written
+ * even if the bounded queue is still full; the tail itself never grows past that fixed set.
  */
 class SessionLog(
     private val directory: File,
@@ -81,7 +81,7 @@ class SessionLog(
 
     val lostEventCount: Long get() = lostCount.get()
 
-    /** Non-null when a file write failed; the session can no longer be exported as complete. */
+    /** Non-null when a file write or the writer's close failed; the package is not complete. */
     val writeFailure: String? get() = writeFailureMessage
 
     /** Records that could not even be handed to the writer because it had already failed. */
@@ -100,7 +100,9 @@ class SessionLog(
             configurationWriter = openWriter(SessionFiles.CONFIGURATION_EVENTS)
         } catch (error: IOException) {
             // Not being able to open the files is the same class of failure as not being able
-            // to write them: the session cannot be exported as complete.
+            // to write them: the session cannot be exported as complete. If the second file
+            // failed to open, the first is already open and must be closed here.
+            closeQuietly()
             writeFailureMessage = "opening the session files failed: ${error.message}"
             running = false
             return
@@ -128,12 +130,21 @@ class SessionLog(
     }
 
     /**
-     * Queues a record that must be written even when the bounded queue is full, used for the
-     * events that close the session. The tail is unbounded on purpose: it holds at most a
-     * couple of records per session and is drained before the files are closed.
+     * Queues a record that must be written even when the bounded queue is full, used only for
+     * the fixed set of closing diagnostics (at most two LOG_OVERFLOW events and one
+     * SESSION_CLOSED). A full tail latches the loss like any other full queue, so this path
+     * cannot grow without bound.
      */
     fun offerAtClose(record: SessionRecord) {
-        synchronized(tail) { tail.addLast(record) }
+        val accepted = synchronized(tail) {
+            if (tail.size < MAX_CLOSE_RECORDS) {
+                tail.addLast(record)
+                true
+            } else {
+                false
+            }
+        }
+        if (!accepted) latchLoss(record)
     }
 
     /** The loss, per affected log, in the shape `LOG_OVERFLOW` needs. */
@@ -167,16 +178,25 @@ class SessionLog(
     /**
      * Stops accepting records, drains the queue and the closing tail, and closes both files.
      * Returns null on success, or the failure to report.
+     *
+     * A writer that does not finish within the join timeout is a failure like any other: the
+     * writers stay owned by the writer thread, which is interrupted rather than closed from
+     * this thread. Closing them concurrently with a write in progress would corrupt the very
+     * files the package is built from; the failure is latched instead, so the sealed session is
+     * INCOMPLETE and the export is refused. A thread that never returns leaves its descriptors
+     * open until the process ends, which is why it is a daemon thread.
      */
     fun closeAndDrain(): String? {
         running = false
         val thread = writerThread
         writerThread = null
-        thread?.join(WRITER_JOIN_TIMEOUT_MS)
-        if (thread != null && thread.isAlive) {
-            thread.interrupt()
-            closeQuietly()
-            return "the session writer thread did not finish within ${WRITER_JOIN_TIMEOUT_MS}ms"
+        if (thread != null) {
+            thread.join(WRITER_JOIN_TIMEOUT_MS)
+            if (thread.isAlive) {
+                writeFailureMessage = writeFailureMessage
+                    ?: "the session writer thread did not finish within ${WRITER_JOIN_TIMEOUT_MS}ms"
+                thread.interrupt()
+            }
         }
         return writeFailureMessage
     }
@@ -210,7 +230,14 @@ class SessionLog(
 
     private fun writeLoop() {
         while (true) {
-            val record = queue.poll(POLL_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            val record = try {
+                queue.poll(POLL_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS)
+            } catch (error: InterruptedException) {
+                // closeAndDrain gave up waiting and asked the writer to stop. Leave the loop so
+                // the final drain and close below still run; the interrupt itself must not skip
+                // closing the files.
+                break
+            }
             if (record != null) {
                 if (!write(record)) break
                 continue
@@ -287,6 +314,13 @@ class SessionLog(
          * is reached the loss is latched and reported, and the session is marked incomplete.
          */
         const val DEFAULT_QUEUE_CAPACITY = 4096
+
+        /**
+         * Upper bound on the close-only tail. Two LOG_OVERFLOW events (one per log) plus
+         * SESSION_CLOSED are the whole fixed set; a larger set is a bug, so the bound turns it
+         * into a counted loss instead of unbounded memory.
+         */
+        private const val MAX_CLOSE_RECORDS = 4
 
         private const val POLL_TIMEOUT_MS = 20L
         private const val WRITER_JOIN_TIMEOUT_MS = 5_000L

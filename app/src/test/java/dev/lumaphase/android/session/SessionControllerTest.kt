@@ -408,6 +408,142 @@ class SessionControllerTest {
     }
 
     @Test
+    fun aCloseTimeoutIsReportedAndSealedAsIncomplete() {
+        val directory = Files.createTempDirectory("optc-close-timeout").toFile()
+        val parked = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val log = SessionLog(
+            directory,
+            serialize = { record ->
+                // Hold the writer inside the first record until the sealing path has given up,
+                // which is the real condition a close-timeout reports.
+                parked.countDown()
+                release.await()
+                line(record)
+            },
+        )
+        var now = 0L
+        val controller = SessionController(
+            sessionId = "close-timeout-session",
+            environment = environment(),
+            eventLog = log,
+            clock = { now },
+        )
+        controller.registerLayout(layout("dynamic-layout-0", 1080, 2400))
+        controller.startSession()
+        assertTrue("the writer must be parked", parked.await(2, TimeUnit.SECONDS))
+        now += 1
+        controller.onDisplayStarted(displayStart("surface-1", "dynamic-layout-0"))
+
+        val sealed = controller.stopSession(SessionClosedReason.USER_STOP)!!
+
+        // The timeout is a real close failure: the sealed session must carry it and must not be
+        // COMPLETE, so the caller refuses to hand the directory over as a finished package.
+        assertNotNull(sealed.writeFailure)
+        assertTrue(
+            "a close timeout must name the writer",
+            sealed.writeFailure!!.contains("did not finish"),
+        )
+        assertEquals("INCOMPLETE", sealed.summary.dataIntegrity.wire)
+
+        release.countDown()
+    }
+
+    @Test
+    fun aLargeUnresolvedSetAtCloseIsBoundedByTheQueue() {
+        val directory = Files.createTempDirectory("optc-close-pending").toFile()
+        val parked = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        // The writer is parked on the first record, so the queue is provably full while the
+        // close walks a large set of frames that never resolved.
+        val log = SessionLog(
+            directory,
+            serialize = { record ->
+                parked.countDown()
+                release.await()
+                line(record)
+            },
+            capacity = 4,
+        )
+        var now = 0L
+        val controller = SessionController(
+            sessionId = "close-pending-session",
+            environment = environment(),
+            eventLog = log,
+            clock = { now },
+        )
+        controller.registerLayout(layout("dynamic-layout-0", 1080, 2400))
+        controller.startSession()
+        assertTrue(parked.await(2, TimeUnit.SECONDS))
+        controller.advancePhase(SessionPhase.RUNNING)
+        controller.onDisplayStarted(displayStart("surface-1", "dynamic-layout-0"))
+        repeat(200) { index ->
+            now += 1
+            submit(controller, FrameKind.DYNAMIC, index.toULong(), "${index + 10}", now)
+        }
+
+        val sealedRef = java.util.concurrent.atomic.AtomicReference<SealedSession?>()
+        val closer = Thread { sealedRef.set(controller.stopSession(SessionClosedReason.USER_STOP)) }
+        closer.start()
+        // The writer stays parked while the close walks the 200 unresolved frames; the queue
+        // holds four records, so the rest must be counted as lost, not queued on a side tail.
+        Thread.sleep(100)
+        release.countDown()
+        closer.join(10_000)
+        assertFalse("the close must finish without waiting for a drained tail", closer.isAlive)
+
+        val sealed = sealedRef.get()!!
+        assertNull("overflow is not a write failure", sealed.writeFailure)
+        assertEquals("INCOMPLETE", sealed.summary.dataIntegrity.wire)
+        assertTrue(sealed.summary.lostEventCount >= 100L)
+        assertEquals(200, sealed.summary.segments.single().finalUnconfirmedFrames)
+        // Before the fix every never-resolved frame was appended to the close tail and written;
+        // now they take the normal bounded queue and a full queue drops them. A few may pass
+        // through while the closer and the released writer race, but never the whole set.
+        val unconfirmedLines = File(directory, SessionFiles.DISPLAY_EVENTS)
+            .readLines()
+            .count { it.contains("UNCONFIRMED") }
+        assertTrue(
+            "an unresolved set must not all reach the close tail (got $unconfirmedLines)",
+            unconfirmedLines < 50,
+        )
+        assertTrue(
+            "the closing diagnostics still reach the file",
+            File(directory, SessionFiles.CONFIGURATION_EVENTS).readLines()
+                .any { it.contains("SESSION_CLOSED") },
+        )
+    }
+
+    @Test
+    fun aPartiallyOpenedLogClosesTheFirstWriter() {
+        val directory = Files.createTempDirectory("optc-partial-open").toFile()
+        // The display log opens first; the configuration log cannot be opened because its path
+        // is a directory. The already-open first writer must be closed, not leaked.
+        File(directory, SessionFiles.CONFIGURATION_EVENTS).mkdirs()
+        val log = SessionLog(directory, serialize = { line(it) })
+
+        log.start()
+
+        assertNotNull(log.writeFailure)
+        assertEquals(0L, File(directory, SessionFiles.DISPLAY_EVENTS).length())
+    }
+
+    @Test
+    fun theCloseTailDropsRecordsBeyondItsFixedBound() {
+        val directory = Files.createTempDirectory("optc-close-tail").toFile()
+        val log = SessionLog(directory, serialize = { line(it) }, capacity = 2)
+
+        repeat(100) { log.offerAtClose(configurationRecord(it.toLong())) }
+
+        // Only the fixed closing set fits; the flood must be latched as loss, not retained.
+        assertTrue(log.hasOverflowed)
+        assertTrue("a bounded tail must drop the excess", log.lostEventCount >= 90L)
+        val loss = log.losses().single()
+        assertEquals(SessionFiles.CONFIGURATION_EVENTS, loss.affectedLog)
+        assertEquals(log.lostEventCount, loss.lostEventCount)
+    }
+
+    @Test
     fun configurationEventDetailsCarryTheContractKeys() {
         val directory = Files.createTempDirectory("optc-details").toFile()
         val records = ArrayList<SessionRecord>()
