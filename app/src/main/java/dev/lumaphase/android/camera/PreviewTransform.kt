@@ -1,48 +1,36 @@
 package dev.lumaphase.android.camera
 
 import android.graphics.Matrix
-import android.graphics.RectF
 import android.view.TextureView
-import kotlin.math.max
 
 /**
- * Display-only transform for the live `TextureView` preview.
+ * Display-only uniform transform for the live `TextureView` preview.
  *
- * TextureView already presents the sensor output upright in the device's natural orientation;
- * it does not apply the current display rotation. This helper applies that display rotation and
- * scales the preview to fill the view. The transform is never used to map touches or analyse
- * pixels: frames are rotated independently in [GrayFrameExtractor], so the recognition
- * coordinates do not depend on this matrix or on a guessed sign.
+ * TextureView presents the camera buffer in its natural (sensor-rotated) orientation, not in
+ * the display rotation. The pure [PreviewMatrix] composition takes the natural content, applies
+ * the current display rotation and one uniform fit scale, and returns an affine matrix. The
+ * view is sized to [CameraPreviewInfo.uprightSize] by the caller, so live preview and frozen
+ * upright image share aspect/FOV; any remaining space is a centred letterbox rather than a
+ * non-uniform stretch.
+ *
+ * The transform is display-only. Touches, overlays and manual corners use
+ * [CameraPreviewGeometry.fit] / [CameraPreviewGeometry.viewToFrame] on the upright frame.
  */
 object PreviewTransform {
     fun apply(
         textureView: TextureView,
-        previewWidthPx: Int,
-        previewHeightPx: Int,
-        displayRotationDeg: Int,
+        preview: CameraPreviewInfo,
     ) {
-        if (textureView.width <= 0 || textureView.height <= 0 ||
-            previewWidthPx <= 0 || previewHeightPx <= 0
-        ) {
-            return
-        }
-        val viewWidth = textureView.width.toFloat()
-        val viewHeight = textureView.height.toFloat()
-        val centerX = viewWidth / 2f
-        val centerY = viewHeight / 2f
-
-        val bufferRect = RectF(0f, 0f, previewWidthPx.toFloat(), previewHeightPx.toFloat())
-        val viewRect = RectF(0f, 0f, viewWidth, viewHeight)
-        bufferRect.offset(centerX - bufferRect.centerX(), centerY - bufferRect.centerY())
-
+        if (textureView.width <= 0 || textureView.height <= 0) return
+        val affine = PreviewMatrix.viewAdditive(preview, textureView.width, textureView.height)
         val matrix = Matrix()
-        matrix.setRectToRect(viewRect, bufferRect, Matrix.ScaleToFit.FILL)
-        val scale = max(
-            viewHeight / previewHeightPx.toFloat(),
-            viewWidth / previewWidthPx.toFloat(),
+        matrix.setValues(
+            floatArrayOf(
+                affine.m00, affine.m01, affine.m02,
+                affine.m10, affine.m11, affine.m12,
+                0f, 0f, 1f,
+            ),
         )
-        matrix.postScale(scale, scale, centerX, centerY)
-        matrix.postRotate(-displayRotationDeg.toFloat(), centerX, centerY)
         textureView.setTransform(matrix)
     }
 }

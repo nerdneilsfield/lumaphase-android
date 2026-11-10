@@ -2,6 +2,14 @@
 
 ## 新任务：手机相机识别测试
 
+2026-11-11，连续识别最终窄复核四项通过，报告 `/tmp/lumaphase-camera-preview-final-review.md`：TextureView附加矩阵采用 `M=N∘D⁻¹` 并验证与默认铺满合成，旧单排共同逻辑长轴切带覆盖90/270精确带数与方向，两组外部payload按带独立解码，手动忙提示不清旧reading。协调者已读取报告、测试XML与APK，151 tests零失败/错误/跳过；APK SHA-256 `9d7ff672b3eedaa183b21524f9d59a677162b0194a1e57434a0269655cd1365a`。README由协调者在作者源码冻结后更新，属于已授权文档工作，不是作者修改冻结源码；新增入口说明亦由协调者同步为连续识别。源码与构建接受准备整文件提交，设备TextureView/OpenCV JNI/连续帧/手动触控仍未验证，不宣称现场效果通过。
+
+2026-11-11，上一采集/画布切片已整文件提交 `be556fe`，终版只读复核通过。用户真机反馈“能跑了”，但图片比例不正确，并明确要求相机打开后连续显示识别数据；该反馈只证明应用可运行，不证明相机方向/识别正确。当前唯一writer b0f任务 `task_38a899b56420` / `ctx_8b1bb00bae92` 修复raw/upright/View等比例映射并收紧相机UI；a668任务 `task_37902da94a98` / `ctx_17008ba5280d` 只读核对core到连续ArUco/采样/解码的最短接线方案。自动识别OpenCV官方AAR下载许可已询问，等待明确答复，不阻塞比例修复；不得把当前采集页标作识别完成。
+
+用户随后明确“不行就上opencv5”并要求继续，OpenCV下载已获授权。协调者直接核查官方GitHub release与Maven metadata，5.1.0为正式发行，Android AAR HTTP200、147907333字节，采用5.1.0固定本地依赖。原计划是4.10.0而非4.1，不再等待旧下载问题答复。比例修复已reported（124测试通过，APK SHA-256 `003d25f94f2fa4be140db8c932cc4f066e317ae52b670a9ecd1bd57a1aeff29b`），未接受未提交；a668任务 `task_81d0e06a7adf` / `ctx_f5056811c136` 先复核实际TextureView变换，b0f任务 `task_e4d1ebec24e0` / `ctx_e0b6f1a40631` 先固定官方AAR并核实真实Java/native API、实现定位/采样pipeline，暂不修改比例审阅中的六文件。下一步串行接连续相机流和结果叠加；缺参考/模块不可伪造PASS，停止/未定位清除旧成功结果，分析线程有界单飞并随owner释放。
+
+连续识别UI任务 `task_6de8daec7ffb` / `ctx_c538ece52d09` 已reported，整树冻结、未接受未提交。OpenCV5.1.0本地AAR已固定，真实Java API为 `org.opencv.geometry.Geometry.findHomography`；连续单飞分析、私有源布局记忆、定位/逐band解码显示及冻结帧手动四角已接线。协调者读取XML确认140 tests、0 failures/errors/skipped并核对APK 223,918,647字节、SHA-256 `683b8f8d2e77f07bc0d44d250632d7778b3a7d42d9fc4f049c5faa817ff12dde`。报告 `/tmp/lumaphase-camera-live-ui-evidence.md`，a668正在只读终版复核 `/tmp/lumaphase-camera-live-final-review.md`；预览实际Matrix合成、JNI、真实连续帧及触摸均未在设备上验证，不能记作用户所见比例或识别已修好。
+
 用户授权新增相机测试入口，明确自动识别四角ArUco并允许手动四角兜底，参考lumaphase-sync实际实现；原显示功能保留。目标是导入被测源的实际layout.json、选择布局、预览相机并显示定位/采样与16位payload、CRC/Runner状态。没有显示日志/实测profile时不推算完整render_seq、同步误差或TRANSITION_FIT精细时间。原图与预览的旋转/裁剪映射、导入坐标和手动参考角需一致；手机相机的滚动快门不等于工站全局快门。
 
 当前先完成不依赖新库的纯Kotlin解码切片：tab a668bba3为唯一writer，输入已归一化68/52模块，沿用core严格互补阈值0.35、最多12个软Gray位枚举、Gray/CRC/Runner候选过滤、PASS/SOFT/FAIL与truncated语义；软唯一候选不能提升为hard PASS。以原14向量、全载荷hard往返、CRC/Runner反例和soft阈值外部预期验证。tab b0f15fd7只读核对Camera2/ImageReader生命周期、帧stride/crop、预览映射和OpenCV接入，不同时改代码或构建。

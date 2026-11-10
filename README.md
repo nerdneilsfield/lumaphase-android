@@ -1,6 +1,6 @@
 # LumaPhase Android
 
-LumaPhase 的 Android 光学时间码显示端，在手机上显示 `OPTC-1` 图案并记录会话日志，供外部相机拍摄和时间关联。应用使用 Kotlin、Jetpack Compose 和 OpenGL ES，另提供手机相机采集测试入口；完整光学识别和多设备时钟拟合由 Python core 处理。
+LumaPhase 的 Android 光学时间码显示端，在手机上显示 `OPTC-1` 图案并记录会话日志，供外部相机拍摄和时间关联。应用使用 Kotlin、Jetpack Compose 和 OpenGL ES，另提供基于 OpenCV 5.1.0 的手机相机识别测试；精细光学时间估计和多设备时钟拟合由 Python core 处理。
 
 当前可构建 debug APK，支持新网格和原单排布局。应用由 DengQi 开发，处于设备验证阶段：编码、几何、会话逻辑和 APK 构建已验证，真实屏幕显示、相机识别和文件导出仍需真机验证。
 
@@ -83,13 +83,17 @@ adb shell am start -n dev.lumaphase.android/.MainActivity
 
 当前新会话使用 schema `1.1`，光学协议仍是 `OPTC-1`。布局名称由 `geometry_profile` 表示，`layout_profile` 仍为 `F68` 或 `C52`，`layout_id` 标识不可变几何对象。导出矩形采用左上原点、整数像素半开边界，已经包含图案旋转；读取端按矩形采样，不再次旋转。完整字段见[共享数据契约](docs/cw/optc-1-contract.md)。
 
-## 手机相机采集测试
+## 手机相机识别测试
 
-配置页选择 **Open the camera capture test**，授予相机权限后使用后置相机预览。选择 **Capture one frame** 显示冻结灰度图，选择 **Resume preview** 返回预览；离开页面或切后台会释放相机。没有后置相机的设备仍可安装和使用显示功能。
+配置页选择 **打开相机取帧**，授予相机权限后使用后置相机预览。首次使用选择 **导入 layout.json**，导入被测显示设备实际导出的布局；文件有多个布局时，明确选择一个 `layout_id`。应用保存已导入的布局和选择，下次打开相机页后自动恢复并连续识别，无需逐张拍摄。离开页面或切后台会释放相机。没有后置相机的设备仍可安装和使用显示功能。
 
-选择 **Import layout.json** 导入被测显示设备的实际布局文件；文件有多个布局时，通过 `layout_id` 选项明确选择。本页支持符合契约的 schema 1.0 单排和 schema 1.1 单排、网格，拒绝损坏或不完整的布局。早期 Android 版本把内部图案区域误记为完整画布，其文件会被拒绝；请用本版本重新导出。
+自动模式要求画面中同时出现四个 ArUco 标记（ID 0–3），显示定位框、低 16 位 payload 候选及 CRC／Runner 状态。绿色表示存在硬判决唯一且校验通过的带，黄色表示已定位但未通过，红色表示定位或校验失败；旧单排各薄带分别解码，不能把混合状态当作同一个稳定码字。镜头移开后，新分析结果会清除旧定位和 payload。
 
-本页目前只提供预览、冻结帧和布局导入，尚未接入自动 ArUco、手动四角定位或图像解码结果。纯 Kotlin payload 解码器已有单元测试，但还未连接相机页；不能用本页判断 CRC、同步误差或光学时间精度。相机页尚未在真实设备上运行验证。
+自动定位失败时，可选择 **拍摄一帧**，再选择 **手动四角**，依次点击动态编码区域外框的左上、右上、右下、左下角；不要选择 ArUco 标记或整个屏幕外壳。点击黑边留白不会计入坐标。选择 **恢复预览** 返回连续自动识别。初始化或相机错误后，可使用 **重新打开相机** 显式恢复。
+
+本页支持符合契约的 schema 1.0 单排和 schema 1.1 单排、网格，拒绝损坏或不完整的布局。早期 Android 版本把内部图案区域误记为完整画布，其文件会被拒绝；请用本版本重新导出。识别依赖源布局，应用不根据手机型号或标记 ID 猜测布局。
+
+识别结果只包含低 16 位状态，不能直接得到完整 `render_seq`、同步误差或精细光学时间。当前采用未标定的平面单应近似，未处理镜头畸变和屏幕响应标定。新连续识别与比例修复尚未在真实设备上验证；编译和 JVM 测试不代表现场识别通过。
 
 ## 时间戳与验证范围
 
@@ -97,7 +101,7 @@ adb shell am start -n dev.lumaphase.android/.MainActivity
 
 EGL 原生时间值目前按 `CLOCK_DOMAIN_UNVERIFIED` 保存，标准实际时间字段保持为空；原生值保留在平台时间戳条目中。缺少实测屏幕扫描与亮暗响应标定时，这些记录不能直接给出精细光学曝光时间。
 
-当前 JVM 测试结果为 121 项通过，APK 包含四 ABI 原生库。检查覆盖共同布局案例、协议向量、全载荷解码、旧单排回归、会话逻辑、布局导入和灰度帧复制/旋转。实际 Builder 的 24 个布局也已通过 Python core 的读取校验；该输入使用测试序列化器，未覆盖生产 `JsonWriter` 字节。尚未在 Android 设备上验证实际 GL 像素、EGL 属性与时间戳支持、120 Hz 请求效果、生命周期回调顺序、相机预览/取帧、SAF 导出，以及远距识别率和时序精度。
+当前 JVM 测试结果为 151 项通过，APK 包含四 ABI 原生库，约 224 MB。检查覆盖共同布局案例、协议向量、全载荷解码、旧单排回归、会话逻辑、布局导入、灰度帧复制/旋转、预览矩阵合成和逐带采样/解码。实际 Builder 的 24 个布局也已通过 Python core 的读取校验；该输入使用测试序列化器，未覆盖生产 `JsonWriter` 字节。尚未在 Android 设备上验证实际 GL 像素、EGL 属性与时间戳支持、120 Hz 请求效果、生命周期回调顺序、新版相机比例/连续识别、OpenCV JNI、SAF 导出，以及远距识别率和时序精度。
 
 ## 从源码构建
 
@@ -134,3 +138,5 @@ export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
 ## 许可证
 
 项目采用 [MIT License](LICENSE)。内置 ArUco 字典数据取自 OpenCV 4.10.0，来源和 Apache-2.0 许可说明见 [ArUcoDict4x4_50.kt](app/src/main/java/dev/lumaphase/android/layout/ArUcoDict4x4_50.kt)。
+
+相机识别使用固定在 [third_party/opencv-5.1.0](third_party/opencv-5.1.0/SOURCE.md) 的官方 Android AAR，许可证为 Apache-2.0；构建直接使用本地文件。

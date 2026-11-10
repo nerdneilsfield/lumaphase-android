@@ -6,11 +6,12 @@ import android.graphics.Bitmap
 import android.graphics.SurfaceTexture
 import android.os.Handler
 import android.os.Looper
-import android.util.Size
 import android.view.TextureView
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -36,24 +37,35 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.lumaphase.android.layout.ImportedLayout
 import dev.lumaphase.android.layout.LayoutImportException
 import dev.lumaphase.android.layout.LayoutJsonImport
+import dev.lumaphase.android.recognition.BandReading
+import dev.lumaphase.android.recognition.RecognitionReading
+import dev.lumaphase.android.recognition.RecognitionStatus
+import dev.lumaphase.android.recognition.RecognitionVisual
+import dev.lumaphase.android.recognition.RecognitionVisualState
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.Locale
 
 /**
- * Read-only camera capture screen for the recognition work.
+ * Continuous camera recognition screen.
  *
- * This slice deliberately has no ArUco button, no manual four-corner button and no decoded
- * payload result. It opens the back camera, shows a live preview, imports a real
- * `layout.json`, and freezes one upright grayscale frame for the next slice. Showing a
- * "recognized" value here would be a fabricated success.
+ * The preview and the frozen/overlay coordinates both use CameraPreviewGeometry.fit on the
+ * upright frame; there is no raw-buffer aspect or second pattern rotation. Auto mode analyzes
+ * the newest Y frame only when a source layout is selected; manual mode freezes one upright
+ * frame and maps dynamic-rectangle taps with the same fit.
  */
 @Composable
 fun CameraTestScreen(
@@ -62,24 +74,29 @@ fun CameraTestScreen(
 ) {
     val context = LocalContext.current
     val mainHandler = remember { Handler(Looper.getMainLooper()) }
-
     var permissionGranted by remember {
         mutableStateOf(
             context.checkSelfPermission(Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED,
         )
     }
-    var status by remember { mutableStateOf("Camera is not open") }
+    var status by remember { mutableStateOf("相机未打开") }
     var errorMessage by remember { mutableStateOf<String?>(null) }
-    var previewSize by remember { mutableStateOf<Size?>(null) }
+    var cameraRetryAvailable by remember { mutableStateOf(false) }
+    var previewInfo by remember { mutableStateOf<CameraPreviewInfo?>(null) }
     var surfaceAvailable by remember { mutableStateOf(false) }
     var textureView by remember { mutableStateOf<TextureView?>(null) }
     var frozenBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var frozenFrame by remember { mutableStateOf<GrayFrame?>(null) }
     var frozenDescription by remember { mutableStateOf<String?>(null) }
+    var reading by remember { mutableStateOf<RecognitionReading?>(null) }
+    var manualMode by remember { mutableStateOf(false) }
+    var manualPoints by remember { mutableStateOf<List<DoublePoint>>(emptyList()) }
+    var viewSize by remember { mutableStateOf(IntSize.Zero) }
 
     var layouts by remember { mutableStateOf<List<ImportedLayout>>(emptyList()) }
     var selectedIndex by remember { mutableIntStateOf(-1) }
+    var sourceText by remember { mutableStateOf<String?>(null) }
     var importStatus by remember { mutableStateOf<String?>(null) }
     var importing by remember { mutableStateOf(false) }
     val importingFlag = remember { AtomicBoolean(false) }
@@ -90,9 +107,9 @@ fun CameraTestScreen(
         permissionGranted = granted
         if (granted) {
             errorMessage = null
-            status = "Camera permission granted"
+            status = "相机权限已授予"
         } else {
-            errorMessage = "Camera permission was denied; the capture test cannot start"
+            errorMessage = "相机权限被拒绝，无法进行取帧测试"
         }
     }
 
@@ -100,37 +117,63 @@ fun CameraTestScreen(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) {
-            importStatus = "Layout import cancelled"
+            importStatus = "已取消导入"
             return@rememberLauncherForActivityResult
         }
         if (!importingFlag.compareAndSet(false, true)) return@rememberLauncherForActivityResult
         importing = true
-        importStatus = "Reading ${uri.lastPathSegment ?: "layout.json"}…"
+        importStatus = "正在读取 ${uri.lastPathSegment ?: "layout.json"}…"
         Thread {
             val result = runCatching {
                 val text = context.contentResolver.openInputStream(uri)?.use { stream ->
                     stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
                 } ?: throw LayoutImportException("The selected file could not be read")
-                LayoutJsonImport.parse(text)
+                text to LayoutJsonImport.parse(text)
             }
             mainHandler.post {
                 importingFlag.set(false)
                 importing = false
-                result.onSuccess { imported ->
+                result.onSuccess { (text, imported) ->
                     layouts = imported
-                    // With more than one immutable layout, do not silently choose one from
-                    // the current screen orientation or file order: the operator must select.
+                    sourceText = text
                     selectedIndex = if (imported.size == 1) 0 else -1
+                    reading = null
+                    frozenBitmap = null
+                    frozenFrame = null
+                    frozenDescription = null
+                    manualMode = false
+                    manualPoints = emptyList()
                     importStatus = if (imported.size == 1) {
-                        "Imported 1 layout object"
+                        "已导入 1 个布局对象"
                     } else {
-                        "Imported ${imported.size} layout objects; select one below"
+                        "已导入 ${imported.size} 个布局对象，请在下方选择一个"
                     }
                 }.onFailure { error ->
-                    layouts = emptyList()
-                    selectedIndex = -1
                     importStatus = null
-                    errorMessage = error.message ?: "Layout import failed"
+                    errorMessage = error.message ?: "布局导入失败"
+                }
+            }
+        }.start()
+    }
+
+    // Restore only through the real parser; a broken preference is discarded, never guessed.
+    LaunchedEffect(Unit) {
+        val saved = CameraLayoutStore.load(context) ?: return@LaunchedEffect
+        Thread {
+            val result = runCatching { CameraLayoutRestore.restore(saved.text, saved.layoutId) }
+            mainHandler.post {
+                result.onSuccess { restored ->
+                    layouts = restored.layouts
+                    sourceText = saved.text
+                    selectedIndex = restored.selectedIndex
+                    importStatus = if (selectedIndex >= 0) {
+                        "已恢复上次选择的布局"
+                    } else {
+                        "上次布局未选择，请选择"
+                    }
+                }.onFailure {
+                    CameraLayoutStore.clear(context)
+                    errorMessage = "上次保存的 layout.json 无法恢复，请重新导入"
                 }
             }
         }.start()
@@ -143,72 +186,159 @@ fun CameraTestScreen(
             }
 
             override fun onError(message: String) {
+                reading = null
+                cameraRetryAvailable = true
                 errorMessage = message
             }
 
-            override fun onPreviewSize(size: Size) {
-                previewSize = size
+            override fun onPreviewInfo(preview: CameraPreviewInfo) {
+                previewInfo = preview
+                cameraRetryAvailable = false
+                errorMessage = null
                 textureView?.let { controller.configurePreview(it) }
             }
 
             override fun onFrame(frame: GrayFrame) {
-                // Keep the upright grayscale buffer, not only the display bitmap: the next
-                // slice needs the exact pixels and dimensions for manual-corner sampling.
                 frozenFrame = frame
                 frozenBitmap = frame.toDisplayBitmap()
                 frozenDescription = frame.description
+                reading = null
+                manualMode = false
+                manualPoints = emptyList()
                 errorMessage = null
-                status = "Frozen frame; live preview continues underneath"
+                status = "已冻结一帧；可点手动四角或恢复预览"
+            }
+
+            override fun onRecognition(readingValue: RecognitionReading, generation: Int) {
+                reading = readingValue
+                val profile = layouts.getOrNull(selectedIndex)?.profile
+                val visual = profile?.let { RecognitionVisualState.of(readingValue, it) }
+                status = when (visual) {
+                    RecognitionVisual.PASS -> "已定位 · CRC PASS"
+                    RecognitionVisual.FAILED -> "已定位 · CRC FAIL"
+                    RecognitionVisual.LOCATED_WARNING -> "已定位 · 未通过"
+                    RecognitionVisual.NOT_LOCATED, null -> "未定位"
+                } + if (readingValue.manual) "（手动四角）" else ""
+                cameraRetryAvailable = false
+                errorMessage = null
+            }
+
+            override fun onAnalysisError(message: String, generation: Int) {
+                reading = null
+                cameraRetryAvailable = true
+                errorMessage = message
+                status = "分析不可用"
+            }
+
+            override fun onAnalysisBusy(message: String, generation: Int) {
+                // User-reachable manual double tap only: keep the current reading and do not
+                // offer the camera-reopen action for a temporary busy rejection.
+                status = message
             }
         }
         onDispose { controller.listener = null }
     }
 
     LaunchedEffect(resumed) {
-        // A one-time camera grant can be revoked while the app is in the background. Re-check
-        // when the Activity becomes visible instead of assuming the old grant is still valid.
-        if (resumed) {
+        if (!resumed) {
+            reading = null
+            manualMode = false
+            manualPoints = emptyList()
+        } else {
             permissionGranted = context.checkSelfPermission(Manifest.permission.CAMERA) ==
                 PackageManager.PERMISSION_GRANTED
         }
     }
 
-    LaunchedEffect(resumed, permissionGranted, surfaceAvailable, textureView) {
+    val selected = layouts.getOrNull(selectedIndex)
+    LaunchedEffect(resumed, permissionGranted, surfaceAvailable, textureView, selected?.layoutId, manualMode, frozenBitmap) {
         val view = textureView
         if (resumed && permissionGranted && surfaceAvailable && view != null) {
             controller.start(view)
+            if (selected != null && !manualMode && frozenBitmap == null) {
+                controller.startLive(selected)
+            } else {
+                controller.stopLive()
+            }
         } else {
+            controller.stopLive()
             controller.stop()
         }
     }
 
-    val selected = layouts.getOrNull(selectedIndex)
-    val previewRatio = previewSize?.let { it.width.toFloat() / it.height.toFloat() } ?: (4f / 3f)
+    LaunchedEffect(selected?.layoutId) {
+        reading = null
+        manualMode = false
+        manualPoints = emptyList()
+        frozenBitmap = null
+        frozenFrame = null
+        frozenDescription = null
+    }
+
+    LaunchedEffect(selectedIndex, layouts, sourceText) {
+        val chosen = layouts.getOrNull(selectedIndex)
+        val text = sourceText
+        if (chosen != null && !text.isNullOrBlank()) {
+            CameraLayoutStore.save(context, text, chosen.layoutId)
+        }
+    }
+
+    val previewRatio = previewInfo?.uprightSize?.let {
+        it.width.toFloat() / it.height.toFloat()
+    } ?: (4f / 3f)
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .verticalScroll(rememberScrollState())
-            .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        Text("Camera recognition capture", style = MaterialTheme.typography.titleLarge)
-        Text(
-            "This slice only previews the back camera and freezes one upright Y frame. " +
-                "ArUco detection, manual corners and payload decoding are not enabled yet.",
-            style = MaterialTheme.typography.bodySmall,
-        )
-
-        if (!permissionGranted) {
-            Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                Text("Grant camera permission")
-            }
-        }
+        Text("相机取帧", style = MaterialTheme.typography.titleLarge)
+        Text(status, style = MaterialTheme.typography.bodySmall)
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(previewRatio),
+                .aspectRatio(previewRatio)
+                .onSizeChanged { viewSize = it }
+                .pointerInput(manualMode, frozenFrame, viewSize) {
+                    detectTapGestures { tap ->
+                        if (!manualMode) return@detectTapGestures
+                        val frame = frozenFrame ?: return@detectTapGestures
+                        val fit = CameraPreviewGeometry.fit(
+                            viewSize.width.toFloat(),
+                            viewSize.height.toFloat(),
+                            frame.width.toFloat(),
+                            frame.height.toFloat(),
+                        )
+                        val mapped = CameraPreviewGeometry.viewToFrame(
+                            fit,
+                            tap.x,
+                            tap.y,
+                            frame.width,
+                            frame.height,
+                        )
+                        if (mapped == null) {
+                            status = "点在图像外，请点动态区外边界"
+                            return@detectTapGestures
+                        }
+                        if (manualPoints.size >= 4) manualPoints = emptyList()
+                        val next = manualPoints + mapped
+                        manualPoints = next
+                        status = "已点 ${next.size}/4：动态区外边界 TL/TR/BR/BL"
+                        if (next.size == 4) {
+                            val layout = selected
+                            if (layout == null) {
+                                errorMessage = "请先导入并选择源布局"
+                            } else {
+                                manualMode = false
+                                status = "手动四角分析中…"
+                                controller.analyzeManual(frame, layout, next)
+                            }
+                        }
+                    }
+                },
             contentAlignment = Alignment.Center,
         ) {
             AndroidView(
@@ -254,50 +384,98 @@ fun CameraTestScreen(
             frozenBitmap?.let { bitmap ->
                 Image(
                     bitmap = bitmap.asImageBitmap(),
-                    contentDescription = "Frozen upright grayscale camera frame",
+                    contentDescription = "冻结的 upright 灰度帧",
                     contentScale = ContentScale.Fit,
                     modifier = Modifier.matchParentSize(),
                 )
+            }
+            OverlayCanvas(
+                reading = reading,
+                manualPoints = manualPoints,
+                frozenFrame = frozenFrame,
+                profile = selected?.profile,
+                modifier = Modifier.matchParentSize(),
+            )
+            if (!permissionGranted) {
+                Text("相机权限未授予", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+
+        if (!permissionGranted) {
+            Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
+                Text("授予相机权限")
             }
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Button(
                 enabled = permissionGranted && resumed && !importing,
-                onClick = { controller.requestFrame() },
+                onClick = {
+                    controller.stopLive()
+                    controller.requestFrame()
+                },
             ) {
-                Text("Capture one frame")
+                Text("拍摄一帧")
             }
             Button(
-                enabled = frozenBitmap != null,
+                enabled = frozenFrame != null,
+                onClick = {
+                    manualMode = true
+                    manualPoints = emptyList()
+                    reading = null
+                    status = "请点动态区外边界 TL/TR/BR/BL（不含 ArUco）"
+                },
+            ) {
+                Text("手动四角")
+            }
+            Button(
+                enabled = frozenBitmap != null || manualMode,
                 onClick = {
                     frozenFrame = null
                     frozenBitmap = null
                     frozenDescription = null
-                    status = "Live preview"
+                    manualMode = false
+                    manualPoints = emptyList()
+                    reading = null
+                    status = "实时自动识别"
                 },
             ) {
-                Text("Resume preview")
+                Text("恢复预览")
             }
         }
-
-        Text(status, style = MaterialTheme.typography.bodySmall)
+        if (manualMode) {
+            Text(
+                "请按 左上→右上→右下→左下 点击动态编码区外边界；已点 ${manualPoints.size}/4",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
         frozenDescription?.let {
             Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
         errorMessage?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
+        if (cameraRetryAvailable) {
+            Button(onClick = {
+                val view = textureView ?: return@Button
+                errorMessage = null
+                cameraRetryAvailable = false
+                controller.retryCamera(view, selected)
+            }) {
+                Text("重新打开相机")
+            }
+        }
 
-        Text("Imported source layout", style = MaterialTheme.typography.labelLarge)
+        RecognitionResultBar(reading, selected)
+
+        Text("导入源布局", style = MaterialTheme.typography.labelLarge)
         Button(
             enabled = !importing,
             onClick = { importLauncher.launch(arrayOf("*/*")) },
         ) {
-            Text(if (importing) "Reading…" else "Import layout.json")
+            Text(if (importing) "读取中…" else "导入 layout.json")
         }
         importStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-
         if (layouts.size > 1) {
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
@@ -306,17 +484,19 @@ fun CameraTestScreen(
                 layouts.forEachIndexed { index, layout ->
                     FilterChip(
                         selected = index == selectedIndex,
-                        onClick = { selectedIndex = index },
+                        onClick = {
+                            selectedIndex = index
+                            reading = null
+                            manualMode = false
+                            manualPoints = emptyList()
+                        },
                         label = { Text(layout.layoutId) },
                     )
                 }
             }
         }
         if (layouts.size > 1 && selected == null) {
-            Text(
-                "Select one source layout before the next recognition slice uses it.",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Text("请选择要使用的源布局。", style = MaterialTheme.typography.bodySmall)
         }
         selected?.let { layout ->
             Text(
@@ -327,6 +507,125 @@ fun CameraTestScreen(
         }
     }
 }
+
+@Composable
+private fun OverlayCanvas(
+    reading: RecognitionReading?,
+    manualPoints: List<DoublePoint>,
+    frozenFrame: GrayFrame?,
+    profile: dev.lumaphase.android.protocol.LayoutProfile?,
+    modifier: Modifier = Modifier,
+) {
+    Canvas(modifier = modifier) {
+        val frameWidth = reading?.frameWidthPx ?: frozenFrame?.width
+        val frameHeight = reading?.frameHeightPx ?: frozenFrame?.height
+        if (frameWidth != null && frameHeight != null && frameWidth > 0 && frameHeight > 0) {
+            val fit = CameraPreviewGeometry.fit(
+                size.width,
+                size.height,
+                frameWidth.toFloat(),
+                frameHeight.toFloat(),
+            )
+            fun screen(point: DoublePoint) = Offset(
+                fit.offsetX + point.x.toFloat() * fit.scale,
+                fit.offsetY + point.y.toFloat() * fit.scale,
+            )
+            val corners = reading?.markerFrameCorners.orEmpty()
+            val visual = reading?.let { value ->
+                profile?.let { RecognitionVisualState.of(value, it) }
+            }
+            val color = when (visual) {
+                RecognitionVisual.PASS -> Color(0xFF00C853)
+                RecognitionVisual.FAILED -> Color(0xFFFF1744)
+                RecognitionVisual.LOCATED_WARNING -> Color(0xFFFFC400)
+                RecognitionVisual.NOT_LOCATED, null -> Color(0xFFFF5252)
+            }
+            corners.forEach { group ->
+                if (group.size >= 4) {
+                    for (index in 0 until 4) {
+                        drawLine(
+                            color = color,
+                            start = screen(group[index]),
+                            end = screen(group[(index + 1) % 4]),
+                            strokeWidth = 2.dp.toPx(),
+                        )
+                    }
+                    group.forEach { drawCircle(color, radius = 3.dp.toPx(), center = screen(it)) }
+                }
+            }
+            if (manualPoints.isNotEmpty()) {
+                for (index in manualPoints.indices) {
+                    val point = screen(manualPoints[index])
+                    drawCircle(Color.Yellow, radius = 5.dp.toPx(), center = point)
+                    if (index > 0) {
+                        drawLine(
+                            color = Color.Yellow,
+                            start = screen(manualPoints[index - 1]),
+                            end = point,
+                            strokeWidth = 2.dp.toPx(),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RecognitionResultBar(reading: RecognitionReading?, selected: ImportedLayout?) {
+    if (selected == null) {
+        Text("未配置源布局：请导入并选择 layout.json", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    if (reading == null) {
+        Text("等待识别…", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    val visual = RecognitionVisualState.of(reading, selected.profile)
+    val located = if (reading.located) {
+        "定位 ${if (reading.manual) "手动四角" else "4/4"} · RMS ${reading.geometryErrorPx?.let { format1(it) } ?: "—"} px"
+    } else {
+        "未定位 · 缺 IDs ${reading.missingMarkerIds.joinToString(",")}"
+    }
+    Text(
+        "$located · $visual · ${reading.failureReason ?: ""}",
+        fontFamily = FontFamily.Monospace,
+        style = MaterialTheme.typography.bodySmall,
+    )
+    if (!reading.located) return
+    if (reading.status == RecognitionStatus.NO_DECODE && reading.bands.isEmpty()) {
+        Text(
+            "不可判：${reading.failureReason ?: "未知原因"}",
+            color = MaterialTheme.colorScheme.error,
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+    reading.bands.forEach { band -> Text(bandLine(band), fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall) }
+    if (reading.bands.size > 1) {
+        Text(
+            "单排薄带结果逐带显示；不跨 band 合成 payload。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+    }
+}
+
+private fun bandLine(band: BandReading): String {
+    val decode = band.decode
+    if (decode == null) {
+        return "band ${band.bandIndex}: 不可判 ${band.reason ?: ""} " +
+            "missing=${band.missingModules.size} refMissing=${band.referenceMissing}"
+    }
+    val payload = when (decode.payloadCandidates.size) {
+        0 -> "payload 无"
+        1 -> String.format(Locale.ROOT, "payload 0x%04X", decode.payloadCandidates[0])
+        else -> "payload 多候选 ${decode.payloadCandidates.size}"
+    }
+    return "band ${band.bandIndex}: $payload · CRC ${decode.crcStatus.wire} · " +
+        "Runner ${decode.runnerStatus.wire} · hard=${decode.hardBitCount}" +
+        if (decode.truncated) " · TRUNCATED" else ""
+}
+
+private fun format1(value: Double): String = String.format(Locale.ROOT, "%.1f", value)
 
 private fun layoutMetadata(layout: ImportedLayout): String = buildString {
     appendLine("layout_id ${layout.layoutId}")

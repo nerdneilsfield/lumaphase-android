@@ -66,6 +66,9 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // Pinned local OpenCV 5.1.0 AAR; no Maven coordinate and no build-time download.
+    implementation(files("../third_party/opencv-5.1.0/opencv-5.1.0.aar"))
+
     // The same Gson artifact was already a cached test dependency; it is promoted to the
     // runtime classpath so the layout import parser can be exercised in host JVM tests
     // instead of relying on Android's JsonReader, which cannot run here.

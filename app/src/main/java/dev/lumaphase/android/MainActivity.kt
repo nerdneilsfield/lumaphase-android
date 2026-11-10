@@ -284,18 +284,16 @@ private fun SettingsScreen() {
             style = MaterialTheme.typography.bodySmall,
         )
 
-        Text("Camera recognition test", style = MaterialTheme.typography.labelLarge)
+        Text("相机识别测试", style = MaterialTheme.typography.labelLarge)
         Text(
-            "Opens the back camera, imports a source layout.json and freezes one upright Y " +
-                "frame. This slice has no ArUco or manual-corner button and reports no " +
-                "decoded payload.",
+            "导入源 layout.json 后连续识别光学时间码，也可冻结画面手动选择四角。",
             style = MaterialTheme.typography.bodySmall,
         )
         Button(
             onClick = { context.startActivity(Intent(context, CameraTestActivity::class.java)) },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Open the camera capture test")
+            Text("打开相机取帧")
         }
         dynamicSummary?.let { summary ->
             Text(summary, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
