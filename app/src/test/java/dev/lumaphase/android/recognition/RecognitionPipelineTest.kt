@@ -57,8 +57,12 @@ class RecognitionPipelineTest {
         val reading = RecognitionPipeline(FakeLocator(located())).analyze(frame, layout)
         assertTrue(reading.located)
         assertEquals(2, reading.bands.size)
-        assertEquals(listOf(vectors[0].first), reading.bands[0].decode!!.payloadCandidates)
-        assertEquals(listOf(vectors[1].first), reading.bands[1].decode!!.payloadCandidates)
+        val first = reading.bands[0].decode!!
+        val second = reading.bands[1].decode!!
+        assertEquals(listOf(vectors[0].first), first.payloadCandidates)
+        assertEquals(listOf(vectors[1].first), second.payloadCandidates)
+        assertEquals(DecodeStatus.PASS, first.crcStatus)
+        assertEquals(DecodeStatus.PASS, second.crcStatus)
     }
 
     @Test

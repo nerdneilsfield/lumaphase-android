@@ -93,8 +93,10 @@ class FrameSamplerTest {
         assertTrue(result.moduleBandCounts.all { it == 400 })
         result.bands.forEach { band ->
             val bounds = band.sampleBounds.getValue(0)
-            assertTrue("90 short-axis window y0=${bounds.minY}", bounds.minY >= 0.8)
-            assertTrue("90 short-axis window y1=${bounds.maxY}", bounds.maxY <= 3.2)
+            // The 60% short-axis window is y 0.8..3.2; with ny=2 the two sample centres are
+            // 1.4 and 2.6, which pins the window instead of only checking a loose range.
+            assertEquals(1.4, bounds.minY, 1e-9)
+            assertEquals(2.6, bounds.maxY, 1e-9)
         }
     }
 
@@ -106,7 +108,8 @@ class FrameSamplerTest {
         assertTrue(result.moduleBandCounts.all { it == 400 })
         result.bands.forEach { band ->
             val bounds = band.sampleBounds.getValue(0)
-            assertTrue(bounds.minY >= 0.8 && bounds.maxY <= 3.2)
+            assertEquals(1.4, bounds.minY, 1e-9)
+            assertEquals(2.6, bounds.maxY, 1e-9)
         }
     }
 
@@ -126,6 +129,14 @@ class FrameSamplerTest {
             "270 band 0 is the low logical-y end",
             gradient270.bands.first().rawMeans.getValue(0) <
                 gradient270.bands.last().rawMeans.getValue(0),
+        )
+
+        val vertical0 = legacyLayout(272, 800, rotation = 0)
+        val gradient0 = FrameSampler.sample(gradientYFrame(vertical0), vertical0, IDENTITY)
+        assertTrue(
+            "0 band 0 is the low logical-y end",
+            gradient0.bands.first().rawMeans.getValue(0) <
+                gradient0.bands.last().rawMeans.getValue(0),
         )
 
         val vertical180 = legacyLayout(272, 800, rotation = 180)

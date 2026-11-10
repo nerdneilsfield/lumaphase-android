@@ -2,6 +2,8 @@
 
 ## 新任务：手机相机识别测试
 
+内置参考布局增量已完成并通过独立窄复核：Android六个预设由实际Builder生成，Mac四个选项读取实际Mac Builder生成的16布局资产（SHA-256 `b950f1b13ad2b8cb8ef53089eb184cfda87948083087aa2044d63c607af21baf`）。首次默认Android竖屏F68网格，内置/导入分别记忆；所有旋转有唯一layoutId，换旋转走原startLive失效旧generation。报告 `/tmp/lumaphase-camera-builtins-evidence.md`、`/tmp/lumaphase-camera-builtins-final-review.md`。作者运行161 tests零失败/错误/跳过；提交范围纳入这些新增测试，避免把未提交测试计数当作源码验证。新版APK SHA-256 `b5b9f024c3bf44235cb059fb82e1feb051198b5dd6de49916087a10dfe17a2d2`。真机预设切换、Compose恢复、相机定位和JNI运行仍未验证；参考尺寸不代表被测设备的实际配置。
+
 2026-11-11，连续识别最终窄复核四项通过，报告 `/tmp/lumaphase-camera-preview-final-review.md`：TextureView附加矩阵采用 `M=N∘D⁻¹` 并验证与默认铺满合成，旧单排共同逻辑长轴切带覆盖90/270精确带数与方向，两组外部payload按带独立解码，手动忙提示不清旧reading。协调者已读取报告、测试XML与APK，151 tests零失败/错误/跳过；APK SHA-256 `9d7ff672b3eedaa183b21524f9d59a677162b0194a1e57434a0269655cd1365a`。README由协调者在作者源码冻结后更新，属于已授权文档工作，不是作者修改冻结源码；新增入口说明亦由协调者同步为连续识别。源码与构建接受准备整文件提交，设备TextureView/OpenCV JNI/连续帧/手动触控仍未验证，不宣称现场效果通过。
 
 2026-11-11，上一采集/画布切片已整文件提交 `be556fe`，终版只读复核通过。用户真机反馈“能跑了”，但图片比例不正确，并明确要求相机打开后连续显示识别数据；该反馈只证明应用可运行，不证明相机方向/识别正确。当前唯一writer b0f任务 `task_38a899b56420` / `ctx_8b1bb00bae92` 修复raw/upright/View等比例映射并收紧相机UI；a668任务 `task_37902da94a98` / `ctx_17008ba5280d` 只读核对core到连续ArUco/采样/解码的最短接线方案。自动识别OpenCV官方AAR下载许可已询问，等待明确答复，不阻塞比例修复；不得把当前采集页标作识别完成。

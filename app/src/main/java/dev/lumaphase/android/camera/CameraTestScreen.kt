@@ -45,12 +45,17 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import dev.lumaphase.android.layout.BuiltInLayouts
+import dev.lumaphase.android.layout.BuiltInSelection
 import dev.lumaphase.android.layout.ImportedLayout
 import dev.lumaphase.android.layout.LayoutImportException
 import dev.lumaphase.android.layout.LayoutJsonImport
+import dev.lumaphase.android.layout.MacReferenceLayouts
+import dev.lumaphase.android.layout.MacReferenceSelection
 import dev.lumaphase.android.recognition.BandReading
 import dev.lumaphase.android.recognition.RecognitionReading
 import dev.lumaphase.android.recognition.RecognitionStatus
@@ -101,6 +106,14 @@ fun CameraTestScreen(
     var importing by remember { mutableStateOf(false) }
     val importingFlag = remember { AtomicBoolean(false) }
 
+    var androidSelection by remember { mutableStateOf<BuiltInSelection?>(null) }
+    var macLayouts by remember { mutableStateOf<List<ImportedLayout>>(emptyList()) }
+    var macSelection by remember { mutableStateOf<MacReferenceSelection?>(null) }
+    var macStatus by remember { mutableStateOf<String?>(null) }
+    val androidLayout = remember(androidSelection) {
+        androidSelection?.let { BuiltInLayouts.build(it) }
+    }
+
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
     ) { granted ->
@@ -137,6 +150,8 @@ fun CameraTestScreen(
                     layouts = imported
                     sourceText = text
                     selectedIndex = if (imported.size == 1) 0 else -1
+                    androidSelection = null
+                    macSelection = null
                     reading = null
                     frozenBitmap = null
                     frozenFrame = null
@@ -156,24 +171,91 @@ fun CameraTestScreen(
         }.start()
     }
 
-    // Restore only through the real parser; a broken preference is discarded, never guessed.
+    // Restore only through the real parsers; a broken preference is discarded, never guessed.
+    // Imported layouts stay available for switching back even when a built-in source was last used.
     LaunchedEffect(Unit) {
-        val saved = CameraLayoutStore.load(context) ?: return@LaunchedEffect
+        val savedImport = CameraLayoutStore.load(context)
+        val savedSource = CameraLayoutStore.loadSource(context)
+        val savedBuiltIn = CameraLayoutStore.loadBuiltIn(context)
         Thread {
-            val result = runCatching { CameraLayoutRestore.restore(saved.text, saved.layoutId) }
+            val macResult = runCatching {
+                val text = context.assets.open(MacReferenceLayouts.ASSET_PATH)
+                    .use { it.bufferedReader(Charsets.UTF_8).readText() }
+                MacReferenceLayouts.load(text)
+            }
+            val importResult = savedImport?.let { saved ->
+                runCatching { CameraLayoutRestore.restore(saved.text, saved.layoutId) }
+            }
             mainHandler.post {
-                result.onSuccess { restored ->
-                    layouts = restored.layouts
-                    sourceText = saved.text
-                    selectedIndex = restored.selectedIndex
-                    importStatus = if (selectedIndex >= 0) {
-                        "已恢复上次选择的布局"
-                    } else {
-                        "上次布局未选择，请选择"
+                macResult.onSuccess {
+                    macLayouts = it
+                    macStatus = null
+                }.onFailure { error ->
+                    macStatus = "Mac 参考预设不可用：${error.message ?: "读取失败"}"
+                }
+                val restoredImport = importResult?.getOrNull()
+                if (importResult != null) {
+                    importResult.onSuccess { restored ->
+                        layouts = restored.layouts
+                        sourceText = savedImport!!.text
+                        if (savedSource == null) {
+                            selectedIndex = restored.selectedIndex
+                            importStatus = if (restored.selectedIndex >= 0) {
+                                "已恢复上次选择的布局"
+                            } else {
+                                "上次布局未选择，请选择"
+                            }
+                        }
+                    }.onFailure {
+                        CameraLayoutStore.clearImported(context)
+                        importStatus = "上次保存的 layout.json 无法恢复，请重新导入"
                     }
-                }.onFailure {
-                    CameraLayoutStore.clear(context)
-                    errorMessage = "上次保存的 layout.json 无法恢复，请重新导入"
+                }
+
+                when (savedSource) {
+                    CameraLayoutStore.Source.BUILTIN_ANDROID -> {
+                        androidSelection = savedBuiltIn?.let {
+                            BuiltInLayouts.selection(it.presetId, it.rotationDeg)
+                        }
+                        if (androidSelection == null) {
+                            errorMessage = "上次保存的 Android 内置预设无法恢复，请重新选择"
+                        }
+                    }
+                    CameraLayoutStore.Source.BUILTIN_MACOS -> {
+                        macSelection = savedBuiltIn?.let {
+                            MacReferenceLayouts.select(macResult.getOrDefault(emptyList()), it.presetId, it.rotationDeg)
+                        }
+                        if (macSelection == null) {
+                            errorMessage = "上次保存的 Mac 参考预设无法恢复，请重新选择"
+                        }
+                    }
+                    CameraLayoutStore.Source.IMPORTED -> {
+                        val restored = restoredImport
+                        if (restored == null) {
+                            errorMessage = "上次保存的 layout.json 无法恢复，请重新导入"
+                        } else {
+                            selectedIndex = restored.selectedIndex
+                            importStatus = if (restored.selectedIndex >= 0) {
+                                "已恢复上次选择的布局"
+                            } else {
+                                "上次布局未选择，请选择"
+                            }
+                        }
+                    }
+                    null -> {
+                        // First launch (or no saved selection): start with the named portrait
+                        // F68 grid preset. This is an explicit preset, never an auto-detection.
+                        if (restoredImport == null) {
+                            androidSelection = BuiltInSelection(BuiltInLayouts.DEFAULT, 0)
+                        } else {
+                            selectedIndex = restoredImport.selectedIndex
+                            importStatus = if (restoredImport.selectedIndex >= 0) {
+                                "已恢复上次选择的布局"
+                            } else {
+                                "上次布局未选择，请选择"
+                            }
+                        }
+                    }
                 }
             }
         }.start()
@@ -250,8 +332,18 @@ fun CameraTestScreen(
         }
     }
 
-    val selected = layouts.getOrNull(selectedIndex)
-    LaunchedEffect(resumed, permissionGranted, surfaceAvailable, textureView, selected?.layoutId, manualMode, frozenBitmap) {
+    val selected = androidLayout ?: macSelection?.layout ?: layouts.getOrNull(selectedIndex)
+    val builtInRotation = androidSelection?.rotationDeg ?: macSelection?.rotationDeg ?: 0
+    LaunchedEffect(
+        resumed,
+        permissionGranted,
+        surfaceAvailable,
+        textureView,
+        selected?.layoutId,
+        selected?.patternRotationDeg,
+        manualMode,
+        frozenBitmap,
+    ) {
         val view = textureView
         if (resumed && permissionGranted && surfaceAvailable && view != null) {
             controller.start(view)
@@ -266,7 +358,7 @@ fun CameraTestScreen(
         }
     }
 
-    LaunchedEffect(selected?.layoutId) {
+    LaunchedEffect(selected?.layoutId, selected?.patternRotationDeg) {
         reading = null
         manualMode = false
         manualPoints = emptyList()
@@ -278,8 +370,30 @@ fun CameraTestScreen(
     LaunchedEffect(selectedIndex, layouts, sourceText) {
         val chosen = layouts.getOrNull(selectedIndex)
         val text = sourceText
-        if (chosen != null && !text.isNullOrBlank()) {
+        if (chosen != null && !text.isNullOrBlank() && androidSelection == null && macSelection == null) {
             CameraLayoutStore.save(context, text, chosen.layoutId)
+        }
+    }
+
+    LaunchedEffect(androidSelection) {
+        androidSelection?.let {
+            CameraLayoutStore.saveBuiltIn(
+                context,
+                CameraLayoutStore.Source.BUILTIN_ANDROID,
+                it.preset.id,
+                it.rotationDeg,
+            )
+        }
+    }
+
+    LaunchedEffect(macSelection) {
+        macSelection?.let {
+            CameraLayoutStore.saveBuiltIn(
+                context,
+                CameraLayoutStore.Source.BUILTIN_MACOS,
+                it.geometry.wire,
+                it.rotationDeg,
+            )
         }
     }
 
@@ -330,7 +444,7 @@ fun CameraTestScreen(
                         if (next.size == 4) {
                             val layout = selected
                             if (layout == null) {
-                                errorMessage = "请先导入并选择源布局"
+                                errorMessage = "请先选择内置预设或导入源布局"
                             } else {
                                 manualMode = false
                                 status = "手动四角分析中…"
@@ -468,6 +582,122 @@ fun CameraTestScreen(
 
         RecognitionResultBar(reading, selected)
 
+        Text("内置参考预设", style = MaterialTheme.typography.labelLarge)
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            BuiltInLayouts.PRESETS.forEach { preset ->
+                FilterChip(
+                    selected = androidSelection?.preset?.id == preset.id,
+                    onClick = {
+                        androidSelection = BuiltInSelection(preset, builtInRotation)
+                        macSelection = null
+                        selectedIndex = -1
+                        reading = null
+                        manualMode = false
+                        manualPoints = emptyList()
+                        frozenBitmap = null
+                        frozenFrame = null
+                        frozenDescription = null
+                        status = "已选内置预设，等待识别…"
+                    },
+                    label = { Text(preset.label) },
+                )
+            }
+        }
+
+        Text(
+            "Mac 参考预设（参考源 $MacReferenceLayouts.SOURCE_REFERENCE，非本机配置）",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(
+            modifier = Modifier.horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            MacReferenceLayouts.GEOMETRIES.forEach { geometry ->
+                FilterChip(
+                    enabled = macLayouts.isNotEmpty(),
+                    selected = macSelection?.geometry == geometry,
+                    onClick = {
+                        val selection = MacReferenceLayouts.select(
+                            macLayouts,
+                            geometry.wire,
+                            builtInRotation,
+                        )
+                        if (selection == null) {
+                            errorMessage = "Mac 参考预设缺少 ${geometry.wire} ${builtInRotation}°"
+                        } else {
+                            androidSelection = null
+                            macSelection = selection
+                            selectedIndex = -1
+                            reading = null
+                            manualMode = false
+                            manualPoints = emptyList()
+                            frozenBitmap = null
+                            frozenFrame = null
+                            frozenDescription = null
+                            status = "已选 Mac 参考预设，等待识别…"
+                        }
+                    },
+                    label = { Text(MacReferenceLayouts.label(geometry)) },
+                )
+            }
+        }
+        macStatus?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+
+        if (androidSelection != null || macSelection != null) {
+            Text("内置预设 pattern rotation（切换清空旧结果）", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BuiltInLayouts.ROTATIONS_DEG.forEach { rotation ->
+                    FilterChip(
+                        selected = builtInRotation == rotation,
+                        onClick = {
+                            val android = androidSelection
+                            val mac = macSelection
+                            if (android != null) {
+                                androidSelection = android.copy(rotationDeg = rotation)
+                            } else if (mac != null) {
+                                val selection = MacReferenceLayouts.select(
+                                    macLayouts,
+                                    mac.geometry.wire,
+                                    rotation,
+                                )
+                                if (selection == null) {
+                                    errorMessage = "Mac 参考预设缺少 ${mac.geometry.wire} ${rotation}°"
+                                    return@FilterChip
+                                }
+                                macSelection = selection
+                            }
+                            reading = null
+                            manualMode = false
+                            manualPoints = emptyList()
+                            frozenBitmap = null
+                            frozenFrame = null
+                            frozenDescription = null
+                        },
+                        label = { Text("$rotation°") },
+                    )
+                }
+            }
+        }
+
+        val activeBuiltInLabel = androidSelection?.preset?.label
+            ?: macSelection?.let { MacReferenceLayouts.label(it.geometry) }
+        val activeBuiltInReference = androidSelection?.preset?.sourceReference
+            ?: macSelection?.let { MacReferenceLayouts.SOURCE_REFERENCE }
+        if (activeBuiltInLabel != null && activeBuiltInReference != null) {
+            Text(
+                "当前内置参考预设：$activeBuiltInLabel · rotation $builtInRotation°（非自动检测）",
+                fontWeight = FontWeight.SemiBold,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "源参考尺寸 $activeBuiltInReference；若被测设备几何不同，仍需导入该设备生成的 layout.json。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+
         Text("导入源布局", style = MaterialTheme.typography.labelLarge)
         Button(
             enabled = !importing,
@@ -476,26 +706,31 @@ fun CameraTestScreen(
             Text(if (importing) "读取中…" else "导入 layout.json")
         }
         importStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
-        if (layouts.size > 1) {
+        if (layouts.isNotEmpty()) {
             Row(
                 modifier = Modifier.horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 layouts.forEachIndexed { index, layout ->
                     FilterChip(
-                        selected = index == selectedIndex,
+                        selected = index == selectedIndex && androidSelection == null && macSelection == null,
                         onClick = {
                             selectedIndex = index
+                            androidSelection = null
+                            macSelection = null
                             reading = null
                             manualMode = false
                             manualPoints = emptyList()
+                            frozenBitmap = null
+                            frozenFrame = null
+                            frozenDescription = null
                         },
                         label = { Text(layout.layoutId) },
                     )
                 }
             }
         }
-        if (layouts.size > 1 && selected == null) {
+        if (layouts.size > 1 && selectedIndex < 0 && androidSelection == null && macSelection == null) {
             Text("请选择要使用的源布局。", style = MaterialTheme.typography.bodySmall)
         }
         selected?.let { layout ->
@@ -574,7 +809,7 @@ private fun OverlayCanvas(
 @Composable
 private fun RecognitionResultBar(reading: RecognitionReading?, selected: ImportedLayout?) {
     if (selected == null) {
-        Text("未配置源布局：请导入并选择 layout.json", style = MaterialTheme.typography.bodySmall)
+        Text("未配置源布局：请选择内置参考预设或导入 layout.json", style = MaterialTheme.typography.bodySmall)
         return
     }
     if (reading == null) {
