@@ -151,6 +151,52 @@ class EglCore {
         EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS).orEmpty()
 
     /**
+     * The render surface's colour space as the platform reports it: the surface's
+     * `EGL_GL_COLORSPACE` when the extension is present, otherwise the EGL default, which is
+     * the non-sRGB (linear) space this app relies on.
+     */
+    fun colorSpaceName(): String {
+        if (config == null) return UNKNOWN
+        val extensions = EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS).orEmpty()
+        if (!extensions.contains(EXT_KHR_GL_COLORSPACE) || surface == EGL14.EGL_NO_SURFACE) {
+            return "EGL_GL_COLORSPACE_DEFAULT"
+        }
+        val value = IntArray(1)
+        if (!EGL14.eglQuerySurface(display, surface, EGL_GL_COLORSPACE, value, 0)) {
+            return "EGL_GL_COLORSPACE_DEFAULT"
+        }
+        return when (value[0]) {
+            EGL_GL_COLORSPACE_SRGB -> "EGL_GL_COLORSPACE_SRGB"
+            EGL_GL_COLORSPACE_LINEAR -> "EGL_GL_COLORSPACE_LINEAR"
+            else -> "0x" + Integer.toHexString(value[0])
+        }
+    }
+
+    /**
+     * The render target's native pixel format, built from the attributes actually obtained
+     * rather than assumed.
+     */
+    fun pixelFormatName(): String {
+        val chosen = config ?: return UNKNOWN
+        val bufferType = IntArray(1)
+        val isRgb = EGL14.eglGetConfigAttrib(display, chosen, EGL14.EGL_COLOR_BUFFER_TYPE, bufferType, 0) &&
+            bufferType[0] == EGL14.EGL_RGB_BUFFER
+        if (!isRgb) return "EGL_LUMINANCE_BUFFER"
+        val red = channelBits(EGL14.EGL_RED_SIZE)
+        val green = channelBits(EGL14.EGL_GREEN_SIZE)
+        val blue = channelBits(EGL14.EGL_BLUE_SIZE)
+        val alpha = channelBits(EGL14.EGL_ALPHA_SIZE)
+        return "EGL_RGB_BUFFER/R${red}G${green}B${blue}A$alpha"
+    }
+
+    private fun channelBits(attribute: Int): Int {
+        val chosen = config ?: return -1
+        val value = IntArray(1)
+        if (!EGL14.eglGetConfigAttrib(display, chosen, attribute, value, 0)) return -1
+        return value[0]
+    }
+
+    /**
      * Requests a presentation time for the next swap through `EGL_ANDROID_presentation_time`
      * (bound as `EGLExt.eglPresentationTimeANDROID`). This is a request, not a result.
      */
@@ -240,8 +286,10 @@ class EglCore {
         const val MAX_CONFIGS = 32
         const val REQUIRED_CHANNEL_BITS = 8
         const val EXT_KHR_GL_COLORSPACE = "EGL_KHR_gl_colorspace"
-        /** `EGL_GL_COLORSPACE_KHR` / `EGL_GL_COLORSPACE_SRGB_KHR`, not exposed by android.opengl.EGL14. */
+        /** `EGL_GL_COLORSPACE_KHR` / `EGL_GL_COLORSPACE_SRGB` / `_LINEAR`, not in android.opengl.EGL14. */
         const val EGL_GL_COLORSPACE = 0x308D
         const val EGL_GL_COLORSPACE_SRGB = 0x3089
+        const val EGL_GL_COLORSPACE_LINEAR = 0x308A
+        const val UNKNOWN = "UNKNOWN"
     }
 }

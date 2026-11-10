@@ -16,6 +16,7 @@ class BoundedFrameEvidenceSink(private val retained: Int = DEFAULT_RETAINED) : F
     private val lock = Any()
     private val submissions = ArrayDeque<String>(retained)
     private val results = ArrayDeque<String>(retained)
+    private val displays = ArrayDeque<String>(retained)
     private var submissionCount = 0
     private var resultCount = 0
 
@@ -23,6 +24,13 @@ class BoundedFrameEvidenceSink(private val retained: Int = DEFAULT_RETAINED) : F
         synchronized(lock) {
             submissionCount++
             offer(submissions, summary(submission))
+        }
+    }
+
+    override fun onDisplayStarted(displayStart: DisplayStart) {
+        synchronized(lock) {
+            offer(displays, "surface=${displayStart.surfaceInstanceId} layout=${displayStart.layoutId} " +
+                "drawable=${displayStart.drawableWidthPx}x${displayStart.drawableHeightPx}")
         }
     }
 
@@ -40,6 +48,8 @@ class BoundedFrameEvidenceSink(private val retained: Int = DEFAULT_RETAINED) : F
     fun recentSubmissions(): List<String> = synchronized(lock) { submissions.toList() }
 
     fun recentResults(): List<String> = synchronized(lock) { results.toList() }
+
+    fun recentDisplays(): List<String> = synchronized(lock) { displays.toList() }
 
     private fun offer(bucket: ArrayDeque<String>, line: String) {
         bucket.addLast(line)

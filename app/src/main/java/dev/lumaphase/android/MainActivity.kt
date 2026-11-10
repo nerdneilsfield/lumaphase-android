@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.provider.DocumentsContract
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -45,7 +46,10 @@ import dev.lumaphase.android.layout.PreviewedLayout
 import dev.lumaphase.android.protocol.EncodedPattern
 import dev.lumaphase.android.protocol.LayoutProfile
 import dev.lumaphase.android.protocol.PatternEncoder
+import dev.lumaphase.android.export.SessionExporter
 import dev.lumaphase.android.render.DynamicRenderThread
+import dev.lumaphase.android.session.SessionConstants
+import java.io.File
 import java.io.OutputStreamWriter
 import java.util.Locale
 
@@ -80,6 +84,8 @@ private fun SettingsScreen() {
     var exportStatus by remember { mutableStateOf<String?>(null) }
     var previewedLayout by remember { mutableStateOf<PreviewedLayout?>(null) }
     var dynamicSummary by remember { mutableStateOf<String?>(null) }
+    var sessionDirectory by remember { mutableStateOf<String?>(null) }
+    var sessionExportStatus by remember { mutableStateOf<String?>(null) }
 
     val parsed = renderSeqText.trim().toULongOrNull()
     val encoded = parsed?.let { PatternEncoder.encode(it, profile) }
@@ -108,10 +114,23 @@ private fun SettingsScreen() {
     val dynamicLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { result ->
-        dynamicSummary = if (result.resultCode == Activity.RESULT_OK) {
-            DynamicPreviewActivity.summary(result.data)
+        if (result.resultCode == Activity.RESULT_OK) {
+            dynamicSummary = DynamicPreviewActivity.summary(result.data)
+            sessionDirectory = DynamicPreviewActivity.sessionDirectory(result.data)
         } else {
-            null
+            dynamicSummary = null
+            sessionDirectory = null
+        }
+    }
+
+    val sessionTreeLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree(),
+    ) { treeUri ->
+        val directory = sessionDirectory
+        sessionExportStatus = when {
+            treeUri == null -> "Session export cancelled."
+            directory == null -> "No sealed session to export."
+            else -> copySessionToTree(context, treeUri, File(directory))
         }
     }
 
@@ -204,23 +223,60 @@ private fun SettingsScreen() {
         Button(
             onClick = {
                 dynamicSummary = null
+                sessionDirectory = null
+                sessionExportStatus = null
                 dynamicLauncher.launch(
-                    DynamicPreviewActivity.intent(context, profile, rotationDeg),
+                    DynamicPreviewActivity.intent(
+                        context,
+                        profile,
+                        rotationDeg,
+                        SessionConstants.EXPERIMENT_PROFILE,
+                        startSession = true,
+                    ),
                 )
             },
             modifier = Modifier.fillMaxWidth(),
         ) {
-            Text("Open the dynamic pattern (VSync + EGL timestamps)")
+            Text("Start session (${SessionConstants.EXPERIMENT_PROFILE})")
+        }
+        Button(
+            onClick = {
+                dynamicSummary = null
+                sessionDirectory = null
+                dynamicLauncher.launch(
+                    DynamicPreviewActivity.intent(
+                        context,
+                        profile,
+                        rotationDeg,
+                        SessionConstants.EXPERIMENT_PROFILE,
+                        startSession = false,
+                    ),
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Open the pattern without a session")
         }
         Text(
-            "Requests ${DynamicRenderThread.REQUESTED_REFRESH_HZ} Hz with " +
-                "CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS. That is a request, not evidence that the " +
-                "panel runs at that rate; the run summary reports what the platform answered.",
+            "A session runs ${SessionConstants.EXPERIMENT_PROFILE}: warm-up, start card, " +
+                "dynamic pattern, end card, then the " +
+                "${DynamicPreviewActivity.DRAIN_MS / 1000} s drain before sealing. It requests " +
+                "${DynamicRenderThread.REQUESTED_REFRESH_HZ} Hz with " +
+                "CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS, which is a request, not evidence that the " +
+                "panel runs at that rate.",
             style = MaterialTheme.typography.bodySmall,
         )
         dynamicSummary?.let { summary ->
             Text(summary, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
+        Button(
+            onClick = { sessionTreeLauncher.launch(null) },
+            enabled = sessionDirectory != null,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Export session (six files)")
+        }
+        sessionExportStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
         Text(
             if (snapshot == null) {
                 "Export stays off until the pattern has been opened at least once. " +
@@ -258,6 +314,37 @@ private fun writeLayoutSnapshot(
     }
     "Wrote the layout the preview rendered: ${snapshot?.description}."
 }.getOrElse { error -> "Export failed: ${error.message}" }
+
+/**
+ * Creates `session_<uuid>/` under the chosen tree and copies the six contract files into it.
+ */
+private fun copySessionToTree(context: Context, treeUri: Uri, sessionDirectory: File): String {
+    val resolver = context.contentResolver
+    return runCatching {
+        val treeDocument = DocumentsContract.buildDocumentUriUsingTree(
+            treeUri,
+            DocumentsContract.getTreeDocumentId(treeUri),
+        )
+        val sessionDocument = DocumentsContract.createDocument(
+            resolver,
+            treeDocument,
+            DocumentsContract.Document.MIME_TYPE_DIR,
+            sessionDirectory.name,
+        ) ?: error("the session folder could not be created")
+
+        val failure = SessionExporter.copySession(sessionDirectory) { fileName ->
+            val file = DocumentsContract.createDocument(
+                resolver,
+                sessionDocument,
+                "application/json",
+                fileName,
+            ) ?: return@copySession null
+            resolver.openOutputStream(file)
+        }
+        failure?.let { error(it) }
+        "Exported six files into ${sessionDirectory.name}."
+    }.getOrElse { error -> "Session export failed: ${error.message}" }
+}
 
 /**
  * Grey for one module level in the schematic bar: the 8-bit SDR level is used directly

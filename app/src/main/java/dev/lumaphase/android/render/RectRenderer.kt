@@ -1,6 +1,8 @@
 package dev.lumaphase.android.render
 
+import android.graphics.Bitmap
 import android.opengl.GLES20
+import android.opengl.GLUtils
 import android.util.Log
 import dev.lumaphase.android.layout.LevelRect
 import dev.lumaphase.android.layout.RectPx
@@ -25,6 +27,13 @@ class RectRenderer {
     private var colorHandle = 0
     private var bufferName = 0
     private var vertices: FloatBuffer =
+        ByteBuffer.allocateDirect(0).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private var textureProgram = 0
+    private var texturePositionHandle = 0
+    private var textureCoordHandle = 0
+    private var textureSamplerHandle = 0
+    private var textureBufferName = 0
+    private var textureVertices: FloatBuffer =
         ByteBuffer.allocateDirect(0).order(ByteOrder.nativeOrder()).asFloatBuffer()
     private var viewportWidth = 1f
     private var viewportHeight = 1f
@@ -59,7 +68,45 @@ class RectRenderer {
             Log.e(TAG, "program is unusable: aPosition=$positionHandle aColor=$colorHandle vbo=$bufferName")
             return false
         }
+        if (!createTextureProgram()) return false
         Log.i(TAG, "program=$program aPosition=$positionHandle aColor=$colorHandle vbo=$bufferName")
+        return true
+    }
+
+    /** The second program draws the stationary identity block over the card background. */
+    private fun createTextureProgram(): Boolean {
+        val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, TEXTURE_VERTEX_SHADER)
+        val fragmentShader = compileShader(GLES20.GL_FRAGMENT_SHADER, TEXTURE_FRAGMENT_SHADER)
+        if (vertexShader == 0 || fragmentShader == 0) return false
+        val linked = GLES20.glCreateProgram()
+        GLES20.glAttachShader(linked, vertexShader)
+        GLES20.glAttachShader(linked, fragmentShader)
+        GLES20.glLinkProgram(linked)
+        GLES20.glDeleteShader(vertexShader)
+        GLES20.glDeleteShader(fragmentShader)
+        val status = IntArray(1)
+        GLES20.glGetProgramiv(linked, GLES20.GL_LINK_STATUS, status, 0)
+        if (status[0] == 0) {
+            Log.e(TAG, "texture program link failed: ${GLES20.glGetProgramInfoLog(linked)}")
+            GLES20.glDeleteProgram(linked)
+            return false
+        }
+        textureProgram = linked
+        texturePositionHandle = GLES20.glGetAttribLocation(textureProgram, "aPosition")
+        textureCoordHandle = GLES20.glGetAttribLocation(textureProgram, "aTexCoord")
+        textureSamplerHandle = GLES20.glGetUniformLocation(textureProgram, "uTexture")
+        val names = IntArray(1)
+        GLES20.glGenBuffers(1, names, 0)
+        textureBufferName = names[0]
+        textureVertices = ByteBuffer.allocateDirect(TEXTURE_VERTICES * 4 * BYTES_PER_FLOAT)
+            .order(ByteOrder.nativeOrder())
+            .asFloatBuffer()
+        if (texturePositionHandle < 0 || textureCoordHandle < 0 || textureSamplerHandle < 0 ||
+            textureBufferName == 0
+        ) {
+            Log.e(TAG, "texture program is unusable")
+            return false
+        }
         return true
     }
 
@@ -148,10 +195,99 @@ class RectRenderer {
             GLES20.glDeleteBuffers(1, intArrayOf(bufferName), 0)
             bufferName = 0
         }
+        if (textureBufferName != 0) {
+            GLES20.glDeleteBuffers(1, intArrayOf(textureBufferName), 0)
+            textureBufferName = 0
+        }
         if (program != 0) {
             GLES20.glDeleteProgram(program)
             program = 0
         }
+        if (textureProgram != 0) {
+            GLES20.glDeleteProgram(textureProgram)
+            textureProgram = 0
+        }
+    }
+
+    /**
+     * Uploads a bitmap as a texture for the stationary identity block. Nearest filtering
+     * keeps the text at its own resolution: the card is not the optical code, so the
+     * no-interpolation rule for module edges does not forbid a sharp text bitmap.
+     */
+    fun createTexture(bitmap: Bitmap): Int {
+        val names = IntArray(1)
+        GLES20.glGenTextures(1, names, 0)
+        val id = names[0]
+        if (id == 0) return 0
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, id)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_NEAREST)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_S, GLES20.GL_CLAMP_TO_EDGE)
+        GLES20.glTexParameteri(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_WRAP_T, GLES20.GL_CLAMP_TO_EDGE)
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        return id
+    }
+
+    fun deleteTexture(textureId: Int) {
+        if (textureId == 0) return
+        GLES20.glDeleteTextures(1, intArrayOf(textureId), 0)
+    }
+
+    /** Draws an uploaded bitmap over [rect] with alpha blending, on top of the last frame. */
+    fun drawTexture(
+        textureId: Int,
+        rect: RectPx,
+        viewportWidthPx: Int,
+        viewportHeightPx: Int,
+    ) {
+        if (textureProgram == 0 || textureId == 0 || viewportWidthPx <= 0 || viewportHeightPx <= 0) return
+        val left = 2f * rect.x0 / viewportWidthPx - 1f
+        val right = 2f * rect.x1 / viewportWidthPx - 1f
+        val top = 1f - 2f * rect.y0 / viewportHeightPx
+        val bottom = 1f - 2f * rect.y1 / viewportHeightPx
+
+        val buffer = textureVertices
+        buffer.clear()
+        buffer.put(left).put(top).put(0f).put(0f)
+        buffer.put(right).put(top).put(1f).put(0f)
+        buffer.put(right).put(bottom).put(1f).put(1f)
+        buffer.put(left).put(top).put(0f).put(0f)
+        buffer.put(right).put(bottom).put(1f).put(1f)
+        buffer.put(left).put(bottom).put(0f).put(1f)
+        buffer.flip()
+
+        GLES20.glUseProgram(textureProgram)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, textureId)
+        GLES20.glUniform1i(textureSamplerHandle, 0)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, textureBufferName)
+        GLES20.glBufferData(
+            GLES20.GL_ARRAY_BUFFER,
+            buffer.remaining() * BYTES_PER_FLOAT,
+            buffer,
+            GLES20.GL_DYNAMIC_DRAW,
+        )
+        GLES20.glEnableVertexAttribArray(texturePositionHandle)
+        GLES20.glVertexAttribPointer(texturePositionHandle, 2, GLES20.GL_FLOAT, false, TEXTURE_STRIDE_BYTES, 0)
+        GLES20.glEnableVertexAttribArray(textureCoordHandle)
+        GLES20.glVertexAttribPointer(
+            textureCoordHandle,
+            2,
+            GLES20.GL_FLOAT,
+            false,
+            TEXTURE_STRIDE_BYTES,
+            2 * BYTES_PER_FLOAT,
+        )
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, TEXTURE_VERTICES)
+        GLES20.glDisableVertexAttribArray(texturePositionHandle)
+        GLES20.glDisableVertexAttribArray(textureCoordHandle)
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, 0)
+        GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)
+        GLES20.glDisable(GLES20.GL_BLEND)
+        GLES20.glUseProgram(0)
     }
 
     private fun ensureCapacity(vertexCount: Int) {
@@ -187,6 +323,8 @@ class RectRenderer {
         const val VERTICES_PER_RECT = 6
         const val BYTES_PER_FLOAT = 4
         const val STRIDE_BYTES = FLOATS_PER_VERTEX * BYTES_PER_FLOAT
+        const val TEXTURE_VERTICES = 6
+        const val TEXTURE_STRIDE_BYTES = 4 * BYTES_PER_FLOAT
 
         const val VERTEX_SHADER = """
             attribute vec2 aPosition;
@@ -212,6 +350,25 @@ class RectRenderer {
             varying vec3 vColor;
             void main() {
                 gl_FragColor = vec4(vColor, 1.0);
+            }
+        """
+
+        const val TEXTURE_VERTEX_SHADER = """
+            attribute vec2 aPosition;
+            attribute vec2 aTexCoord;
+            varying vec2 vTexCoord;
+            void main() {
+                vTexCoord = aTexCoord;
+                gl_Position = vec4(aPosition, 0.0, 1.0);
+            }
+        """
+
+        const val TEXTURE_FRAGMENT_SHADER = """
+            precision mediump float;
+            varying vec2 vTexCoord;
+            uniform sampler2D uTexture;
+            void main() {
+                gl_FragColor = texture2D(uTexture, vTexCoord);
             }
         """
     }

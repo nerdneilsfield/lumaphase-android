@@ -76,6 +76,22 @@ T2 窄复审已返回，四项全部 ADDRESSED，最终文件哈希及测试/APK
 
 ### T4：会话、分段、日志与导出
 
+生命周期复核 `/tmp/lumaphase-android-t4-lifecycle-review.md`：D1/D5/D13和正常首段原因通过，D2/D4/D6仍有真实接线缺口L1（新view绕过owner排空/故障状态）、L2（旧Activity未解绑effects），另有恢复顺序/首段前暂停/封存后重建边界。改变负责人：原审阅者 tab `b0f15fd7-7f5a-48b4-935d-561ee2cae54c` 接手窄修复并成为唯一作者；原实现者暂停写入。仅修接线及直接相关边界，SessionLog/Exporter/Json和D7-D10仍留下一任务。要求验证 completion落在unbind/bind之间及新view生命周期入口，而非仅先bind再fire。T4未接受未提交。
+
+生命周期子任务已报告（`task_108bf797860f` / `ctx_4a3e79e38833`）：新增 PreviewRunHost 单一调度入口及8个外部事件顺序测试；协调者读取代码/报告并核对70 tests零失败/错误/跳过，APK SHA-256 `48e416daa1e826f8f28ead74aa88defc37c6ae9630f8b805a2d876bcf479a648`。已派只读窄复核 D1-D6+D13，重点 host测试与Android实际接线、旧宿主和drain重建；D7-D10日志收尾未动、仍待下一任务。尚未接受或提交T4。
+
+二次独立复查 `/tmp/lumaphase-android-t4-rereview.md` 仍不通过。多数原16项已修，但 D1-D6（双计时、排空恢复、首段原因、completion丢失/旧宿主、swap错误二次读取、日志故障停止未锁存）及 D7-D10（关闭失败传播、无界tail、不可写诊断、部分打开FD）成立，另有 D13环境刷新。达到整批修复两轮后改变范围与验证方法：先由原唯一作者只修生命周期/排空及D13，要求具体事件顺序和回调次数证据；日志close/tail留下一独立串行任务。T4仍未接受未提交，禁止用62测试总数代替生命周期证据。
+
+第 2 轮修复已报告：新增 EGL 所属线程上的有界 pending 查询（16ms tick，最多2s，无新提交），后台阶段保存剩余时长，写失败使用 RENDER_FAILURE。协调者核对 62 tests 零失败/错误/跳过、APK SHA-256 `9ca5ea5c485080cd070c2fcd31b4a0e38eaef4669faaf046a5db7e79adfe5fa3`。已交原独立审阅者复查原16项和直接引入的生命周期问题，特别首次/重建双计时、排空时恢复/Surface销毁及无会话实际路径；未接受未提交。
+
+第 1 轮修复已报告，协调者核对 62 tests 零失败/错误/跳过及 APK SHA-256 `b60724b124a262ba28ea0f7fa9333bec30470ccd46c0284c627ff6e13a03ea09`。仍未接受：源码显示 pauseScheduling 后 onVsync 直接返回，pending 查询只由该回调驱动，等待 2s 没有真正查询；后台保留绝对 elapsed deadline 仍消耗阶段时长。已集中退回作者修这两个明确缺口，并核对排空阶段恢复和写失败结束原因，不启动重复审阅或构建。
+
+首审未通过，报告 `/tmp/lumaphase-android-t4-review.md`。已交原作者集中核对修复：阶段 ns/ms 单位、真实配置事件序列化、resize/恢复分段、无会话路径、写失败/溢出传播、原子帧快照、Activity/后台阶段续接、停止提交后排空、计数与 reason、哨兵符号、卡片 UUID 尺寸和文件关闭。60 测试与 APK 证据属首版，不能证明上述路径正确；T4 未接受未提交。用户提出手机条纹过细，具体担忧待澄清，暂不改变模块数和共享协议。
+
+调度更新：T3 已提交 `3aa6fce`；T4 已启动，Task `task_6c32faa21445` / Dispatch `ctx_869a95ec0098`，唯一实现者仍为原指定 OpenCode 会话，当前状态 running。
+
+T4 首版已报告，状态 reported、未接受未提交。协调者核对原仓库 XML：60 tests，0 failures/errors/skipped；APK SHA-256 `631a5ac704dfeb2ecf6699a2637638867a6e2fe9ff554d24f8856eda12a8c3c9` 与证据一致。host 使用真实 SessionController/SessionLog、替代序列化器验证代表性会话，尚未验证 production JsonWriter 的六文件实际字节；无设备，阶段画面、生命周期、排空和 SAF 未验证。已派原审阅者只读审阅本次完整差异，重点并发/溢出停止、持续查询与封存、卡片身份和六文件实际写入路径，报告预定 `/tmp/lumaphase-android-t4-review.md`。不将构建和键名清单测试视为导出端到端通过。
+
 状态：queued，T3 终版窄复审 `task_94868aff2100` / `ctx_e6da4d52aa8c` 已返回，六项全部 ADDRESSED，spec/quality 均通过。协调者读取完整报告 `/tmp/lumaphase-android-t3-rereview.md`，接受编译及源码部分；没有设备，未接受运行行为。T4 继续由原实现者串行完成；明确会话状态不能依赖单个 Activity 实例。过期 run_id 注释在触及该文件时更正；不为纯测试覆盖抽取额外接口。Surface 重建首帧的间隔统计为 null，避免把停顿算成连续 VSync 间隔。
 
 依赖 T3。增加 `session/`、`log/` 和 `export/` 所需的少量实现，UI 连接实际会话控制与系统导出。

@@ -11,8 +11,11 @@ import dev.lumaphase.android.layout.PatternLayout
 import dev.lumaphase.android.layout.RectPx
 import dev.lumaphase.android.layout.moduleRects
 import dev.lumaphase.android.layout.staticMarkerRects
+import dev.lumaphase.android.protocol.EncodedPattern
 import dev.lumaphase.android.protocol.LayoutProfile
 import dev.lumaphase.android.protocol.PatternEncoder
+import dev.lumaphase.android.timing.DisplayStamp
+import dev.lumaphase.android.timing.DisplayStart
 import dev.lumaphase.android.timing.FrameIdentity
 import dev.lumaphase.android.timing.FrameResult
 import dev.lumaphase.android.timing.FrameSubmission
@@ -46,9 +49,13 @@ class DynamicRenderThread(
     private val patternRotationDeg: Int,
     private val sink: FrameTimingSink,
     private val runState: DynamicRunState,
+    private val stampProvider: () -> DisplayStamp,
 ) {
     private val thread = HandlerThread(THREAD_NAME)
     private lateinit var handler: Handler
+
+    /** Used only to hand the drain completion back to the host's thread. */
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     private var choreographer: Choreographer? = null
     private var egl: EglCore? = null
@@ -66,6 +73,11 @@ class DynamicRenderThread(
     private var lastVsyncIntervalNanos: Long? = null
     private var scheduled = false
     private var released = false
+    private var drainDeadlineNanos = 0L
+    private var drainCompletion: (() -> Unit)? = null
+    private var cardTextureId = 0
+    private var cardTextureLabel: String? = null
+    private var cardTextureSession: String? = null
     private val pending = PendingFrameQueue()
 
     private var framesSubmitted = 0
@@ -146,6 +158,8 @@ class DynamicRenderThread(
                 "pattern_rotation_deg=$patternRotationDeg drawable=${widthPx}x$heightPx " +
                 "display ${displayMode.description}",
         )
+        // The session freezes its segment snapshot from these facts, exactly once per target.
+        reportDisplayStarted(surface, layout, widthPx, heightPx)
         publishStats()
         startScheduling()
     }
@@ -156,9 +170,47 @@ class DynamicRenderThread(
         updateGeometry(widthPx, heightPx, layout)
         requestFrameRate(surface)
         Log.i(TAG, "geometry changed to ${widthPx}x$heightPx, layout ${layout.layoutId}")
+        // The new geometry is a new display target: the session must freeze a new segment for
+        // it, otherwise later frames would still be attributed to the old segment and layout.
+        reportDisplayStarted(surface, layout, widthPx, heightPx)
     }
 
     fun pauseScheduling() = post { stopScheduling("paused") }
+
+    /**
+     * Stops producing new frames and keeps querying the frames already submitted, on this
+     * thread's own Looper, until they settle or the window expires. Results that settle are
+     * reported normally; whatever is still pending at the deadline is reported as
+     * `PENDING_AT_SESSION_CLOSE`, which is the session-close reason, not a Surface loss.
+     *
+     * Reuses the existing Looper with a bounded chain of delayed ticks: no sleeping and no
+     * busy polling, and no work at all once every tracked frame has settled. The completion is
+     * delivered on the host's thread even when this thread is already gone, so the session can
+     * always seal.
+     */
+    fun beginDrain(timeoutNs: Long, onDrained: () -> Unit) {
+        if (released || !this::handler.isInitialized) {
+            mainHandler.post(onDrained)
+            return
+        }
+        if (!handler.post { startDrainOnRenderThread(timeoutNs, onDrained) }) {
+            Log.w(TAG, "render thread is gone; the drain completes on the host thread")
+            mainHandler.post(onDrained)
+        }
+    }
+
+    private fun startDrainOnRenderThread(timeoutNs: Long, onDrained: () -> Unit) {
+        if (released) {
+            mainHandler.post(onDrained)
+            return
+        }
+        stopScheduling("drain")
+        // One drain chain at a time: a stale tick cannot complete a newer window.
+        handler.removeCallbacks(drainTickRunnable)
+        drainCompletion = onDrained
+        drainDeadlineNanos = System.nanoTime() + timeoutNs
+        drainTick()
+    }
 
     fun resumeScheduling() = post {
         if (released) return@post
@@ -194,6 +246,33 @@ class DynamicRenderThread(
     fun displayMode(): String = displayModeText
 
     // ---- render thread ---------------------------------------------------------------------
+
+    private fun drainTick() {
+        if (released) {
+            completeDrain()
+            return
+        }
+        queryPendingFrames()
+        publishStats()
+        if (pending.size == 0 || System.nanoTime() >= drainDeadlineNanos) {
+            completeDrain()
+            return
+        }
+        handler.postDelayed(drainTickRunnable, DRAIN_TICK_MS)
+    }
+
+    private fun completeDrain() {
+        // Anything still tracked when the window closes is reported with the session-close
+        // reason, and the queue is emptied so a later Surface teardown cannot relabel these
+        // frames as a Surface loss.
+        drainPending(UnconfirmedReason.PENDING_AT_SESSION_CLOSE)
+        publishStats()
+        val completion = drainCompletion
+        drainCompletion = null
+        completion?.let { mainHandler.post(it) }
+    }
+
+    private val drainTickRunnable = Runnable { drainTick() }
 
     private fun updateGeometry(widthPx: Int, heightPx: Int, layout: PatternLayout) {
         this.layout = layout
@@ -254,22 +333,41 @@ class DynamicRenderThread(
         }
         lastExpectedPresentNanos = vsync.expectedPresentTimeNanos
 
+        // One read per VSync: the same snapshot decides what is drawn and what identity the
+        // frame carries, so the picture can never disagree with its recorded phase.
+        val currentStamp = stampProvider()
+        val cardLabel = currentStamp.cardLabel
         // A new dynamic state gets a new sequence; it is consumed even if the swap fails.
-        val renderSeq = nextRenderSeq
-        nextRenderSeq += 1uL
-        val encoded = PatternEncoder.encode(renderSeq, profile)
-        val identity = FrameIdentity(
-            runId = currentRun,
-            surfaceInstanceId = surfaceId,
-            nativeFrameId = (nextNativeFrameId++).toString(),
-            renderSeq = renderSeq,
-            layoutId = currentLayout.layoutId,
-        )
+        // Stationary phases carry no dynamic state and consume no sequence (contract section 1).
+        val encoded: EncodedPattern?
+        val renderSeq: ULong?
+        if (cardLabel == null) {
+            val nextSeq = nextRenderSeq
+            nextRenderSeq += 1uL
+            renderSeq = nextSeq
+            encoded = PatternEncoder.encode(nextSeq, profile)
+        } else {
+            renderSeq = null
+            encoded = null
+        }
 
-        rects.beginFrame(viewportWidthPx, viewportHeightPx, staticRects.size + dynamicRects.size)
+        rects.beginFrame(viewportWidthPx, viewportHeightPx, staticRects.size + dynamicRects.size + 1)
         for (rect in staticRects) rects.addRect(rect.rect, rect.level)
-        dynamicRects.forEachIndexed { index, rect -> rects.addRect(rect, encoded.moduleCodes[index]) }
+        if (encoded != null) {
+            dynamicRects.forEachIndexed { index, rect ->
+                rects.addRect(rect, encoded.moduleCodes[index])
+            }
+        } else {
+            // Stationary target: the dynamic area becomes a uniform mid grey (contract section 5).
+            rects.addRect(currentLayout.dynamicRectPx, CardBitmap.MID_GREY_LEVEL)
+        }
         rects.endFrame()
+        if (cardLabel != null) {
+            val textureId = cardTexture(rects, currentLayout, cardLabel, currentStamp.sessionId)
+            if (textureId != 0) {
+                rects.drawTexture(textureId, currentLayout.dynamicRectPx, viewportWidthPx, viewportHeightPx)
+            }
+        }
 
         // Frame id of the swap that is about to happen, taken before it happens. Its error is
         // captured inside the probe right after the call, not after the request or the swap.
@@ -289,13 +387,36 @@ class DynamicRenderThread(
 
         val submitNanos = System.nanoTime()
         val swapped = core.swapBuffers()
+        // eglGetError() clears the error, so it is read exactly once: a second read would
+        // return EGL_SUCCESS (0x3000) and contradict the message. The same value feeds both.
+        var swapError = 0
         val failure = if (swapped) {
             framesSubmitted++
             null
         } else {
             framesFailed++
-            "eglSwapBuffers failed 0x${Integer.toHexString(core.lastError())}"
+            swapError = core.lastError()
+            "eglSwapBuffers failed 0x${Integer.toHexString(swapError)}"
         }
+        val frameKind = currentStamp.frameKind
+        if (frameKind == null) {
+            // No session is recording: the pattern is shown, but nothing is logged.
+            queryPendingFrames()
+            publishStats()
+            if (scheduled && !released) choreographer?.postVsyncCallback(vsyncCallback)
+            return
+        }
+        val identity = FrameIdentity(
+            runId = currentRun,
+            sessionId = currentStamp.sessionId,
+            segmentId = currentStamp.segmentId,
+            surfaceInstanceId = surfaceId,
+            nativeFrameId = (nextNativeFrameId++).toString(),
+            frameKind = frameKind,
+            phase = currentStamp.phase,
+            renderSeq = renderSeq,
+            layoutId = currentStamp.layoutId.ifEmpty { currentLayout.layoutId },
+        )
         sink.onSubmitted(
             FrameSubmission(
                 identity = identity,
@@ -303,14 +424,17 @@ class DynamicRenderThread(
                 submitNanos = submitNanos,
                 eglFrameId = frameId?.let { java.lang.Long.toUnsignedString(it) },
                 presentationRequestNanos = requestedNanos,
+                payloadN = encoded?.payloadN,
+                crc8 = encoded?.crc8,
                 swapAccepted = swapped,
                 failure = failure,
+                failureErrorCode = if (swapped) null else "0x" + Integer.toHexString(swapError),
             ),
         )
         if (!swapped) {
             // No frame reached the compositor, so there is no presentation evidence to
             // collect for it; the consumed sequence is reported by the failed submission.
-            Log.e(TAG, "swap failed for render_seq=$renderSeq: $failure")
+            Log.e(TAG, "swap failed for render_seq=${renderSeq ?: "none"}: $failure")
         } else if (frameId == null) {
             // No frame id means this submission can never be queried, so a supported type is
             // QUERY_FAILED rather than PENDING. A null error code means no call was attempted
@@ -395,12 +519,66 @@ class DynamicRenderThread(
         }
     }
 
+    /**
+     * The identity block is rebuilt only when the session id or the phase label changes, so a
+     * card costs one texture upload, not one per frame.
+     */
+    private fun reportDisplayStarted(
+        surface: Surface,
+        layout: PatternLayout,
+        widthPx: Int,
+        heightPx: Int,
+    ) {
+        val core = egl ?: return
+        sink.onDisplayStarted(
+            DisplayStart(
+                surfaceInstanceId = surfaceInstanceId.orEmpty(),
+                layoutId = layout.layoutId,
+                drawableWidthPx = widthPx,
+                drawableHeightPx = heightPx,
+                colorSpace = core.colorSpaceName(),
+                pixelFormat = core.pixelFormatName(),
+            ),
+        )
+    }
+
+    private fun cardTexture(
+        rects: RectRenderer,
+        layout: PatternLayout,
+        label: String,
+        sessionId: String,
+    ): Int {
+        if (cardTextureId != 0 && cardTextureLabel == label && cardTextureSession == sessionId) {
+            return cardTextureId
+        }
+        if (cardTextureId != 0) {
+            rects.deleteTexture(cardTextureId)
+            cardTextureId = 0
+        }
+        val bitmap = CardBitmap.buildIdentityBitmap(layout, sessionId, PLATFORM_NAME, label)
+        cardTextureId = rects.createTexture(bitmap)
+        bitmap.recycle()
+        cardTextureLabel = label
+        cardTextureSession = sessionId
+        return cardTextureId
+    }
+
     private fun releaseOnRenderThread() {
         if (released) return
         stopScheduling(UnconfirmedReason.SURFACE_DESTROYED)
+        // A destroy during the drain window closes that window out and delivers its
+        // completion: the frames the window was still waiting for are reported at session
+        // close, because the window was already the session's end. A destroy with no drain in
+        // progress is a genuine Surface loss and keeps that reason.
+        if (drainCompletion != null) {
+            completeDrain()
+        }
         drainPending(UnconfirmedReason.SURFACE_DESTROYED)
         // Published before the identity is dropped, so the final stats keep the run id.
         publishStats()
+        cardTextureId = 0
+        cardTextureLabel = null
+        cardTextureSession = null
         renderer?.release()
         renderer = null
         egl?.release()
@@ -453,10 +631,13 @@ class DynamicRenderThread(
     }
 
     companion object {
+        const val PLATFORM_NAME = "ANDROID"
         private const val TAG = "OptcDynamic"
         private const val THREAD_NAME = "optc-dynamic-render"
         private const val RELEASE_TIMEOUT_SECONDS = 2L
         private const val SUMMARY_LOG_INTERVAL_FRAMES = 600
+        /** How often the drain window re-queries while frames are still pending. */
+        private const val DRAIN_TICK_MS = 16L
 
         /** The requested refresh rate. `Surface.setFrameRate` does not guarantee it. */
         const val REQUESTED_REFRESH_HZ = 120f

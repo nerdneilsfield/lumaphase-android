@@ -1,6 +1,7 @@
 package dev.lumaphase.android.render
 
 import dev.lumaphase.android.timing.FrameIdentity
+import dev.lumaphase.android.timing.FrameKind
 import dev.lumaphase.android.timing.VsyncTimeline
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -72,6 +73,8 @@ class PendingFrameQueueTest {
         assertEquals(submitted.identity.runId, tracked.identity.runId)
         assertEquals(submitted.identity.surfaceInstanceId, tracked.identity.surfaceInstanceId)
         assertEquals(submitted.identity.renderSeq, tracked.identity.renderSeq)
+        assertEquals(submitted.identity.segmentId, tracked.identity.segmentId)
+        assertEquals(submitted.identity.frameKind, tracked.identity.frameKind)
         assertEquals(submitted.identity.layoutId, tracked.identity.layoutId)
         assertEquals(submitted.eglFrameId, tracked.eglFrameId)
         assertEquals(submitted.timeline, tracked.timeline)
@@ -86,8 +89,12 @@ class PendingFrameQueueTest {
     private fun frame(index: Int) = PendingFrame(
         identity = FrameIdentity(
             runId = "run-1",
+            sessionId = "session-1",
+            segmentId = "0",
             surfaceInstanceId = "surface-1",
             nativeFrameId = index.toString(),
+            frameKind = FrameKind.DYNAMIC,
+            phase = "RUNNING",
             renderSeq = index.toULong(),
             layoutId = "layout-0",
         ),

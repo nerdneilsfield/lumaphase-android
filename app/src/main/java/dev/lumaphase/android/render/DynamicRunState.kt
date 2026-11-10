@@ -31,4 +31,15 @@ class DynamicRunState {
         this.nextNativeFrameId = nextNativeFrameId
         this.carriedStats = stats
     }
+
+    /**
+     * An explicitly started new session begins its dynamic sequence at zero and counts its
+     * frames from zero (contract section 1). Nothing else resets it: a pause or a Surface
+     * rebuild continues the same run.
+     */
+    fun resetForNewSession() {
+        nextRenderSeq = 0uL
+        nextNativeFrameId = 0L
+        carriedStats = RenderStats.EMPTY
+    }
 }

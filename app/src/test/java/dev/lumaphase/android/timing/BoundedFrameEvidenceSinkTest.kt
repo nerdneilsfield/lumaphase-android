@@ -76,8 +76,11 @@ class BoundedFrameEvidenceSinkTest {
         submitNanos = 3_000L + index,
         eglFrameId = java.lang.Long.toUnsignedString(-1L),
         presentationRequestNanos = 1_000L + index,
+        payloadN = index,
+        crc8 = index,
         swapAccepted = true,
         failure = null,
+        failureErrorCode = null,
     )
 
     private fun result(index: Int) = FrameResult(
@@ -93,8 +96,12 @@ class BoundedFrameEvidenceSinkTest {
 
     private fun identity(index: Int) = FrameIdentity(
         runId = "run-1",
+        sessionId = "session-1",
+        segmentId = "0",
         surfaceInstanceId = "surface-1",
         nativeFrameId = index.toString(),
+        frameKind = FrameKind.DYNAMIC,
+        phase = "RUNNING",
         renderSeq = index.toULong(),
         layoutId = "layout-0",
     )
