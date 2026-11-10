@@ -22,7 +22,7 @@
 
 ### T1：Compose 工程与公共编码器
 
-状态：实现、测试和 APK 构建完成，终版独立审阅 spec/quality 均通过。唯一实现者为指定 OpenCode tab `a668bba3-7f06-43df-acfd-f5c63c09c07a`，Task `task_9bb2fdd4eb10`，Dispatch `ctx_6bbdd119eac5`。
+状态：done，本地提交 `ed8b549`。实现、测试和 APK 构建完成，终版独立审阅 spec/quality 均通过。唯一实现者为指定 OpenCode tab `a668bba3-7f06-43df-acfd-f5c63c09c07a`，Task `task_9bb2fdd4eb10`，Dispatch `ctx_6bbdd119eac5`。
 
 新文件：Gradle Kotlin DSL 根配置、Wrapper、`app/build.gradle.kts`、Manifest、`MainActivity.kt`、`protocol/PatternEncoder.kt`、窄协议测试及测试资源。只添加本任务需要的 Android 资源。UI 展示协议、F68/C52 选择和当前编码状态；不放置尚未实现功能的假按钮。
 
@@ -39,7 +39,15 @@ APK 编译和 JVM 协议测试不能证明 Activity 已在设备运行。可用 
 
 ### T2：静态光学图案与像素布局
 
-状态：ready，T1 源码与构建验证已通过；设备验证继续明确为未验证。
+状态：实现及构建完成，29测试通过，独立窄复审 spec/quality 均通过，整理本地提交。Task `task_0dbc317203cb` / Dispatch `ctx_d47fa75cfda8`；设备验证继续明确为未验证。
+
+首次交付已核验：24 个测试零失败/错误/跳过，APK SHA-256 `03101e1c7c94cbb88889fb4c91fbe3e1bfb9b029cd4f2739fc2491a6dac6d931`。协调者初读发现实际渲染以 Surface 尺寸建布局，导出却用 maximumWindowMetrics 重建，未满足同一几何来源；已交作者修复为实际预览快照并在没有快照时不宣称导出实际布局。附带核对 MSAA 请求与注释。修复 Task `task_c6ae4cb8cd22` / Dispatch `ctx_361fde679043`；独立只读审阅 Task `task_d44e7e3831a2` / Dispatch `ctx_0b457f1c2467`，固定包 `/tmp/lumaphase-android-t2-review-snapshot.md`。修复、复查完成前不接受 T2、不进入 T3。
+
+快照导出修复后 28 测试通过，协调者读到实际布局回传及APK证据。随后独立审阅发现 ArUco 数据单元少一格 border 偏移（主agent已读源码确认），以及隐藏系统栏调用在 setContentView 前可能被空控制器跳过。当前同一作者修复轮 `task_8ff66c5f8a54` / `ctx_383ebe52f45d` 合并修这两项，并去掉无单采样 EGL 配置时仍降级渲染的分支；新增6×6黑边网格外部预期。完成后冻结源码、重建并窄复审，不能用早期通过的测试/APK证明后改代码。
+
+该修复轮已交付：主agent实际读取最终源码及XML，29测试零失败/错误/跳过；APK SHA-256 `90a21103d2cb9e34b2c581ae5fa8ed5679b088dd1b504606f81ae21b354531b6`。ArUco borderPx 内缩、窗口获焦隐藏系统栏及只接受实际单采样RGB888配置均已落盘。已派独立审阅者仅复核这三项、实际布局快照和最终证据，不重跑构建、不扩大范围。尚未提交T2，无设备运行证据。
+
+T2 窄复审已返回，四项全部 ADDRESSED，最终文件哈希及测试/APK吻合。剩余为设备行为和真实 JsonWriter 字节未在 host 执行。审阅另保留 onDestroy 与 surfaceDestroyed 顺序导致 EGL 释放排队晚于线程退出的条件性风险；T3 本就重做渲染线程生命周期，将明确先停止调度、在所属线程释放 EGL，再退出线程，不增加兼容框架。
 
 依赖 T1。新文件集中于 `layout/` 和 `render/`，复用同一编码入口；MainActivity 只增加实际可用的静态预览入口。
 
