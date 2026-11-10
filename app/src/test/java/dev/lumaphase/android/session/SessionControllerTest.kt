@@ -95,7 +95,7 @@ class SessionControllerTest {
         sealed!!
 
         // -- manifest ---------------------------------------------------------------------
-        assertEquals("1.0", sealed.manifest.schemaVersion)
+        assertEquals("1.1", sealed.manifest.schemaVersion)
         assertEquals("OPTC-1", sealed.manifest.protocolVersion)
         assertEquals("ANDROID", sealed.manifest.platform)
         assertEquals("ANDROID_MONOTONIC", sealed.manifest.clockDomain)
@@ -111,7 +111,7 @@ class SessionControllerTest {
         assertEquals(2400, sealed.manifest.segments[0].drawableHeightPx)
         assertEquals(2280, sealed.manifest.segments[1].drawableHeightPx)
         assertEquals("A120-S1", sealed.manifest.segments[0].experimentProfile)
-        assertEquals("EGL_RGB_BUFFER/R8G8B8A0", sealed.manifest.segments[0].pixelFormat)
+        assertEquals("EGL_CONFIG(R=8,G=8,B=8,A=8,BUFFER_SIZE=32)", sealed.manifest.segments[0].pixelFormat)
         // The nominal rational is not exposed by Android, so it stays null rather than faked.
         assertNull(sealed.manifest.segments[0].nominalRefreshNum)
         assertEquals(120, sealed.manifest.segments[0].requestedRefreshNum)
@@ -672,7 +672,7 @@ class SessionControllerTest {
         drawableWidthPx = 1080,
         drawableHeightPx = drawableHeightPx,
         colorSpace = "EGL_GL_COLORSPACE_DEFAULT",
-        pixelFormat = "EGL_RGB_BUFFER/R8G8B8A0",
+        pixelFormat = "EGL_CONFIG(R=8,G=8,B=8,A=8,BUFFER_SIZE=32)",
     )
 
     private fun submit(

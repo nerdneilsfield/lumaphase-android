@@ -10,6 +10,7 @@ import dev.lumaphase.android.layout.LevelRect
 import dev.lumaphase.android.layout.PatternLayout
 import dev.lumaphase.android.layout.RectPx
 import dev.lumaphase.android.layout.moduleRects
+import dev.lumaphase.android.layout.paddingRects
 import dev.lumaphase.android.layout.staticMarkerRects
 import dev.lumaphase.android.protocol.EncodedPattern
 import dev.lumaphase.android.protocol.LayoutProfile
@@ -64,6 +65,7 @@ class DynamicRenderThread(
     private var layout: PatternLayout? = null
     private var staticRects: List<LevelRect> = emptyList()
     private var dynamicRects: List<RectPx> = emptyList()
+    private var paddingLevelRects: List<LevelRect> = emptyList()
     private var surfaceInstanceId: String? = null
     private var nextRenderSeq: ULong = 0uL
     private var nextNativeFrameId: Long = 0L
@@ -281,6 +283,7 @@ class DynamicRenderThread(
         // Marker rectangles and module rectangles do not change between dynamic states.
         staticRects = staticMarkerRects(layout)
         dynamicRects = moduleRects(layout)
+        paddingLevelRects = paddingRects(layout)
     }
 
     private fun requestFrameRate(surface: Surface) {
@@ -351,12 +354,17 @@ class DynamicRenderThread(
             encoded = null
         }
 
-        rects.beginFrame(viewportWidthPx, viewportHeightPx, staticRects.size + dynamicRects.size + 1)
+        rects.beginFrame(
+            viewportWidthPx,
+            viewportHeightPx,
+            staticRects.size + dynamicRects.size + paddingLevelRects.size + 1,
+        )
         for (rect in staticRects) rects.addRect(rect.rect, rect.level)
         if (encoded != null) {
             dynamicRects.forEachIndexed { index, rect ->
                 rects.addRect(rect, encoded.moduleCodes[index])
             }
+            paddingLevelRects.forEach { padding -> rects.addRect(padding.rect, padding.level) }
         } else {
             // Stationary target: the dynamic area becomes a uniform mid grey (contract section 5).
             rects.addRect(currentLayout.dynamicRectPx, CardBitmap.MID_GREY_LEVEL)

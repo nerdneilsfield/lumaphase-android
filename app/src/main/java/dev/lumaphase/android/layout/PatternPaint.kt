@@ -26,12 +26,15 @@ fun paintRects(layout: PatternLayout, pattern: EncodedPattern): List<LevelRect> 
         "encoded ${pattern.profile.name} pattern has ${pattern.moduleCodes.size} modules " +
             "but the layout has ${layout.modules.size}"
     }
-    val rects = ArrayList<LevelRect>(layout.modules.size + markerRectCount(layout))
+    val rects = ArrayList<LevelRect>(
+        layout.modules.size + layout.padding.size + markerRectCount(layout),
+    )
     rects += staticMarkerRects(layout)
     val moduleRects = moduleRects(layout)
     moduleRects.forEachIndexed { index, moduleRect ->
         rects += LevelRect(moduleRect, pattern.moduleCodes[index])
     }
+    rects += paddingRects(layout)
     return rects
 }
 
@@ -57,6 +60,13 @@ fun staticMarkerRects(layout: PatternLayout): List<LevelRect> {
  * so the geometry itself is also built once per layout.
  */
 fun moduleRects(layout: PatternLayout): List<RectPx> = layout.modules.map { it.rectPx }
+
+/**
+ * Padding slots in slot-index order. They are not part of the payload, but the display still
+ * fills them so the grid is visually complete; their levels alternate low/high.
+ */
+fun paddingRects(layout: PatternLayout): List<LevelRect> =
+    layout.padding.map { LevelRect(it.rectPx, it.level) }
 
 private fun markerRectCount(layout: PatternLayout): Int =
     layout.markers.size *

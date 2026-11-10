@@ -43,7 +43,7 @@ class SessionJsonKeysTest {
             SessionJson.MANIFEST_KEYS,
         )
         assertEquals(listOf("raw_ns", "native_clock"), SessionJson.TIME_ORIGIN_KEYS)
-        assertEquals("1.0", SessionConstants.SCHEMA_VERSION)
+        assertEquals("1.1", SessionConstants.SCHEMA_VERSION)
         assertEquals("OPTC-1", SessionConstants.PROTOCOL_VERSION)
         assertEquals(2_000_000_000L, SessionConstants.PRESENTATION_DRAIN_TIMEOUT_NS)
     }

@@ -10,6 +10,8 @@
 
 ## 统一格式决定
 
+Android自动方向补充裁决：以实际Surface/drawable的width/height判定，height>=width用9×8/9×6，width>height用6×12/5×12。不以扣除marker带后的动态区判方向，避免16:9竖屏误选横向网格；图案rotation仍独立变换几何，不改变自动选择方向。
+
 新写入会话统一 schema_version=1.1，涉及原有携带版本的文档；事件行不另加版本。新读取器继续接受1.0旧单排，不承诺旧读取器能解释网格。协议名保持OPTC-1。
 
 - layout_id 保留会话内不可变几何对象身份；layout_profile 保留 F68/C52。

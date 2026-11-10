@@ -37,6 +37,12 @@ android {
         compose = true
     }
 
+    sourceSets {
+        // The shared CR-001 placement fixture is read in place instead of being copied, so
+        // the test and the other repositories use the exact same bytes.
+        getByName("test").resources.srcDir("../docs/cw/fixtures")
+    }
+
     externalNativeBuild {
         cmake {
             path = file("src/main/cpp/CMakeLists.txt")

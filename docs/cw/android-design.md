@@ -54,6 +54,8 @@ Surface 重建或恢复后再次提交动态状态时分配新序号，连续性
 
 默认 `L=32`、`H=224`。C52 去掉循环指示区。CRC 输入为低字节、高字节，多项式 `0x07`，初值及输出异或均为 `0x00`，不反射。
 
+CR-001 在不改变编码数组的前提下新增网格布局：横向 `F68-G6x12`/`C52-G5x12`，Android 竖向默认 `F68-G9x8`/`C52-G9x6`；原 `F68`/`C52` 单排继续保留。槽位 `i` 放在 `row=i/cols`、`column=i%cols`，两轴均用 floor 整除，动态矩形被完整铺满且格宽、格高最多相差 1 像素；列数为偶数，原互补位对不跨逻辑行。`modules` 始终只有 68 或 52 项并按原索引排列，剩余槽位写入独立 `padding`（`slot_index`、`role="padding"`、最终 `rect_px`、实际 L/H 码值），显示端同样绘制填充。Android 按实际 Surface/drawable 的宽高方向选择：高不小于宽（含正方形）用 9×8/9×6，宽大于高用 6×12/5×12；该选择在扣除 marker 之前确定，`pattern_rotation_deg` 只变换已选几何，不改变选择或模块索引顺序。`layout_id` 是会话内不可变对象身份；drawable 尺寸、图案旋转或几何选择变化都产生新的布局对象和新段，不覆盖旧布局。
+
 应用默认竖屏，按共享契约将逻辑图案转换为最终 drawable/Surface 输出像素坐标：左上原点、x 向右、y 向下，矩形采用半开边界。OpenGL 的坐标方向差异由渲染器处理。系统缩放时输出像素不一定对应面板原生像素，屏幕标定需使用相同坐标或提供显式映射；布局尺寸不使用 dp。
 
 图案的 `pattern_rotation_deg` 与显示配置的 `display_rotation_deg` 分开保存。模块矩形及标记顶点已经应用图案旋转，后端不再旋转一次。定位标记使用 `DICT_4X4_50`，逻辑左上、右上、右下、左下的 ID 分别为 0、1、2、3；标记随图案旋转，ID 不重新分配。
@@ -61,6 +63,8 @@ Surface 重建或恢复后再次提交动态状态时分配新序号，连续性
 `Display.getRotation()` 返回 `Surface.ROTATION_0/90/180/270`，分别映射到 `display_rotation_deg=0/90/180/270`。角度描述图形的补偿旋转，与设备物理转动方向相反，不从传感器姿态另算角度。[Android Display.getRotation](https://developer.android.com/reference/android/view/Display#getRotation())
 
 EGL 颜色配置、渲染目标格式和 shader 输出共同决定最终 SDR 码值。使用 sRGB 目标时需考虑传递函数，不能只把 shader 输出设为 `32/255` 或 `224/255` 就宣称输出码值正确；静态验证同时检查目标格式、颜色空间和输出读回。
+
+`pixel_format` 是不透明比较值，来自实际选中的 EGLConfig：依次查询 `EGL_RED_SIZE`、`EGL_GREEN_SIZE`、`EGL_BLUE_SIZE`、`EGL_ALPHA_SIZE`、`EGL_BUFFER_SIZE`，固定写成 `EGL_CONFIG(R=…,G=…,B=…,A=…,BUFFER_SIZE=…)`。任一查询失败写 `UNKNOWN` 并保留诊断，不能把请求的格式或纹理内部格式冒充实际 surface 格式。
 
 图案横截面沿实测扫描方向重复，编码模块排列方向尽量垂直于扫描方向。扫描方向由标定确定，不能根据相机图像行号或竖屏方向推定。布局旋转、Surface 尺寸或显示模式变化时结束当前采集段，为新采集段保存对应布局。
 
@@ -128,7 +132,7 @@ surface.setFrameRate(
 
 每次阶段切换和采集段变化追加配置事件。日志在应用本地目录保存；文件选择器或共享机制只负责导出，不参与渲染。逐帧回调不执行文件写入、压缩和分享操作。
 
-六个会话文件及其字段由共享契约定义。`layout.json` 保存不可变布局集合，每段通过 `layout_id` 引用，旧段布局不会被新尺寸覆盖。
+六个会话文件及其字段由共享契约定义。新会话使用 schema 1.1；`layout.json` 保存不可变布局集合，每个对象完整写 `geometry_profile`、`grid_rows`、`grid_cols`、`module_count`、`padding_count`、`module_order=row-major`、`sampling_inner_fraction=0.6` 和独立 `padding`，单排也写这组扩展（1×68/52、`padding=[]`）。每段通过 `layout_id` 引用，旧段布局不会被新尺寸或新几何覆盖。Android 目前只写 `layout.json`，没有导入读取 caller，因此本轮未新增 1.0 解析器；需要读取 1.0 的消费者按契约第 3.5 节处理缺失的整组扩展。
 
 Android 将 `vsync_id`、`egl_frame_id` 和每次 Surface 创建时分配的 `surface_instance_id` 放入 `platform_ids`。应用另分配会话内唯一的 `native_frame_id`，以 `(session_id,native_frame_id)` 关联提交及结果。显示模式保存于段配置，平台原始旋转枚举保存在平台数据中。
 
@@ -151,7 +155,7 @@ Android 将 `vsync_id`、`egl_frame_id` 和每次 Surface 创建时分配的 `su
 | 检查对象 | 最小证据 |
 |---|---|
 | 编码一致性 | 现有 14 组向量逐项一致；遍历 65,536 个载荷，检查 Gray 往返、F68 长度 68 和亮模块数 34。 |
-| 布局一致性 | 静态渲染像素与 `layout.json` 的矩形和定位标记一致。 |
+| 布局一致性 | 静态渲染像素与 `layout.json` 的矩形和定位标记一致；共同 CR-001 fixture 的 24 个 placement 案例、14 个载荷向量和全部 65,536 个载荷的网格重排检查通过。 |
 | 动态追溯 | 真机短会话中，每条呈现结果能够关联到同一图案的提交记录。 |
 | 时间来源 | 有效、待定、无效和不支持状态各自保留；目标时间不进入实际时间字段。 |
 | 分段 | 切到后台再恢复、改变显示模式或 Surface 尺寸后，身份和布局对应新段。 |

@@ -40,11 +40,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import dev.lumaphase.android.layout.LayoutChoice
 import dev.lumaphase.android.layout.LayoutExport
 import dev.lumaphase.android.layout.PatternLayoutBuilder
 import dev.lumaphase.android.layout.PreviewedLayout
 import dev.lumaphase.android.protocol.EncodedPattern
-import dev.lumaphase.android.protocol.LayoutProfile
 import dev.lumaphase.android.protocol.PatternEncoder
 import dev.lumaphase.android.export.SessionExporter
 import dev.lumaphase.android.render.DynamicRenderThread
@@ -54,8 +54,8 @@ import java.io.OutputStreamWriter
 import java.util.Locale
 
 /**
- * Settings screen for the static OPTC-1 target: layout profile, pattern rotation and the
- * render sequence, with an entry to the real optical preview and a system document
+ * Settings screen for the static OPTC-1 target: layout geometry/payload, pattern rotation
+ * and the render sequence, with an entry to the real optical preview and a system document
  * export of `layout.json`. Compose only configures; the optical pattern itself is drawn
  * by [dev.lumaphase.android.render.StaticPatternSurface], never by Compose.
  *
@@ -78,7 +78,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SettingsScreen() {
     val context = LocalContext.current
-    var profile by remember { mutableStateOf(LayoutProfile.F68) }
+    var layoutChoice by remember { mutableStateOf(LayoutChoice.F68_GRID) }
     var rotationDeg by remember { mutableIntStateOf(0) }
     var renderSeqText by remember { mutableStateOf("0") }
     var exportStatus by remember { mutableStateOf<String?>(null) }
@@ -88,7 +88,7 @@ private fun SettingsScreen() {
     var sessionExportStatus by remember { mutableStateOf<String?>(null) }
 
     val parsed = renderSeqText.trim().toULongOrNull()
-    val encoded = parsed?.let { PatternEncoder.encode(it, profile) }
+    val encoded = parsed?.let { PatternEncoder.encode(it, layoutChoice.layoutProfile) }
 
     val previewLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -143,23 +143,34 @@ private fun SettingsScreen() {
     ) {
         Text("OPTC-1 pattern", style = MaterialTheme.typography.titleLarge)
         Text(
-            "protocol OPTC-1 · schema 1.0 · levels 32/224",
+            "protocol OPTC-1 · schema 1.1 · levels 32/224",
             style = MaterialTheme.typography.bodySmall,
         )
 
-        Text("Layout profile", style = MaterialTheme.typography.labelLarge)
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            LayoutProfile.entries.forEach { candidate ->
-                FilterChip(
-                    selected = candidate == profile,
-                    onClick = {
-                        profile = candidate
-                        previewedLayout = null
-                    },
-                    label = { Text("${candidate.name} · ${candidate.moduleCount}") },
-                )
+        Text("Layout geometry and payload", style = MaterialTheme.typography.labelLarge)
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            LayoutChoice.entries.chunked(2).forEach { rowChoices ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    rowChoices.forEach { candidate ->
+                        FilterChip(
+                            selected = candidate == layoutChoice,
+                            onClick = {
+                                layoutChoice = candidate
+                                previewedLayout = null
+                            },
+                            label = { Text(candidate.label) },
+                        )
+                    }
+                }
             }
         }
+        Text(
+            "Grid geometry follows the Surface orientation: 9×8 (F68) or 9×6 (C52) when the " +
+                "display is portrait or square, 6×12 (F68) or 5×12 (C52) when it is wider " +
+                "than tall. Pattern rotation does not change this choice. The single-row " +
+                "F68/C52 layouts remain available.",
+            style = MaterialTheme.typography.bodySmall,
+        )
 
         Text("pattern_rotation_deg", style = MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -194,7 +205,12 @@ private fun SettingsScreen() {
             Button(
                 onClick = {
                     previewLauncher.launch(
-                        PatternPreviewActivity.intent(context, profile, rotationDeg, encoded.renderSeq),
+                        PatternPreviewActivity.intent(
+                            context,
+                            layoutChoice,
+                            rotationDeg,
+                            encoded.renderSeq,
+                        ),
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -228,7 +244,7 @@ private fun SettingsScreen() {
                 dynamicLauncher.launch(
                     DynamicPreviewActivity.intent(
                         context,
-                        profile,
+                        layoutChoice,
                         rotationDeg,
                         SessionConstants.EXPERIMENT_PROFILE,
                         startSession = true,
@@ -246,7 +262,7 @@ private fun SettingsScreen() {
                 dynamicLauncher.launch(
                     DynamicPreviewActivity.intent(
                         context,
-                        profile,
+                        layoutChoice,
                         rotationDeg,
                         SessionConstants.EXPERIMENT_PROFILE,
                         startSession = false,
@@ -284,7 +300,7 @@ private fun SettingsScreen() {
                     "so it is not estimated from window or display metrics."
             } else {
                 "layout.json will contain the layout the preview actually rendered: " +
-                    "${snapshot.description}. Changing the profile or the rotation " +
+                    "${snapshot.description}. Changing the layout choice or the rotation " +
                     "clears this until the pattern is opened again."
             },
             style = MaterialTheme.typography.bodySmall,

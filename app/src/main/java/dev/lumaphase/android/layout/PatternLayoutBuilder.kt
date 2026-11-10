@@ -16,10 +16,11 @@ import dev.lumaphase.android.protocol.PatternEncoder
  *  - one ArUco marker block in each of the four corners, id 0 top-left, 1 top-right,
  *    2 bottom-right, 3 bottom-left, each surrounded by a one-cell white quiet zone that
  *    is flush with the canvas edge;
- *  - the dynamic module strip between the two marker bands, spanning the canvas width and
- *    split into `moduleCount` vertical bands with boundaries `a + floor(i * (b - a) / M)`
- *    (OPTC-1 section 3.3).
- * The quiet zones, the marker blocks and the dynamic strip never overlap.
+ *  - the dynamic area between the two marker bands. The fixed module array is placed there
+ *    either as one row or as an integer grid; slot `i` sits at `row = i / cols`,
+ *    `column = i % cols` with floor boundaries on both axes (OPTC-1 section 3.3). Grid
+ *    padding slots fill the remaining positions and carry actual low/high levels.
+ * The quiet zones, the marker blocks and the dynamic area never overlap.
  *
  * The canvas covers 96% of the drawable width and 68% of its height (the proportions the
  * original design suggested); the remaining margin is cleared to black.
@@ -41,6 +42,49 @@ object PatternLayoutBuilder {
 
     val ROTATIONS_DEG = intArrayOf(0, 90, 180, 270)
 
+    /**
+     * Builds the layout for a settings choice. A grid choice is resolved from the actual
+     * Surface/drawable width and height, so the same selection becomes 9x8 (portrait) or 6x12
+     * (landscape) without the caller knowing the concrete geometry name. The pattern rotation
+     * is applied afterwards and does not alter the choice.
+     */
+    fun build(
+        layoutId: String,
+        choice: LayoutChoice,
+        drawableWidthPx: Int,
+        drawableHeightPx: Int,
+        patternRotationDeg: Int,
+        levelLow: Int = PatternEncoder.DEFAULT_LEVEL_LOW,
+        levelHigh: Int = PatternEncoder.DEFAULT_LEVEL_HIGH,
+    ): PatternLayout {
+        val frame = canvasFrame(drawableWidthPx, drawableHeightPx, patternRotationDeg)
+        return buildWithGeometry(
+            layoutId,
+            choice.geometryFor(drawableWidthPx, drawableHeightPx),
+            frame,
+            levelLow,
+            levelHigh,
+        )
+    }
+
+    /** Builds an explicitly named geometry; used by tests and by the choice resolver above. */
+    fun build(
+        layoutId: String,
+        geometry: GeometryProfile,
+        drawableWidthPx: Int,
+        drawableHeightPx: Int,
+        patternRotationDeg: Int,
+        levelLow: Int = PatternEncoder.DEFAULT_LEVEL_LOW,
+        levelHigh: Int = PatternEncoder.DEFAULT_LEVEL_HIGH,
+    ): PatternLayout = buildWithGeometry(
+        layoutId,
+        geometry,
+        canvasFrame(drawableWidthPx, drawableHeightPx, patternRotationDeg),
+        levelLow,
+        levelHigh,
+    )
+
+    /** The original single-row API, kept for the legacy F68/C52 layouts and their tests. */
     fun build(
         layoutId: String,
         profile: LayoutProfile,
@@ -49,7 +93,177 @@ object PatternLayoutBuilder {
         patternRotationDeg: Int,
         levelLow: Int = PatternEncoder.DEFAULT_LEVEL_LOW,
         levelHigh: Int = PatternEncoder.DEFAULT_LEVEL_HIGH,
+    ): PatternLayout = build(
+        layoutId,
+        GeometryProfile.legacy(profile),
+        drawableWidthPx,
+        drawableHeightPx,
+        patternRotationDeg,
+        levelLow,
+        levelHigh,
+    )
+
+    private fun buildWithGeometry(
+        layoutId: String,
+        geometry: GeometryProfile,
+        frame: CanvasFrame,
+        levelLow: Int,
+        levelHigh: Int,
     ): PatternLayout {
+        val slotCount = geometry.gridRows * geometry.gridCols
+        val logicalSlots = GridPlacement.slots(
+            frame.dynamicLogical,
+            geometry.gridRows,
+            geometry.gridCols,
+            slotCount,
+        )
+        val logicalModules = List(geometry.moduleCount) { index ->
+            ModuleRect(index, logicalSlots[index])
+        }
+        val paddingLevels = GridPlacement.paddingLevels(geometry, levelLow, levelHigh)
+        val logicalPadding = List(geometry.paddingCount) { index ->
+            PaddingSlot(
+                slotIndex = geometry.moduleCount + index,
+                rectPx = logicalSlots[geometry.moduleCount + index],
+                level = paddingLevels[index],
+            )
+        }
+
+        val mapRect: (RectPx) -> RectPx = { rect ->
+            mapRectToDrawable(
+                frame.patternRotationDeg,
+                frame.patternWidthPx,
+                frame.patternHeightPx,
+                frame.offsetX,
+                frame.offsetY,
+                rect,
+            )
+        }
+
+        val markers = listOf(
+            0 to frame.quietTopLeft,
+            1 to frame.quietTopRight,
+            2 to frame.quietBottomRight,
+            3 to frame.quietBottomLeft,
+        ).map { (id, quiet) ->
+            val outer = RectPx(
+                quiet.x0 + frame.quietZonePx,
+                quiet.y0 + frame.quietZonePx,
+                quiet.x0 + frame.quietZonePx + frame.markerOuterPx,
+                quiet.y0 + frame.quietZonePx + frame.markerOuterPx,
+            )
+            val bitmap = ArUcoDict4x4_50.bitmap(id)
+            // The black edge is one BORDER_BITS cell wide on every side, so the 4x4 data
+            // cells are inset from the black outer edge by that border, not flush with it.
+            val borderPx = ArUcoDict4x4_50.BORDER_BITS * frame.cellSizePx
+            val cellRects = ArrayList<RectPx>(bitmap.size * bitmap.size)
+            val cellValues = ArrayList<Int>(bitmap.size * bitmap.size)
+            for (row in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
+                for (col in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
+                    cellRects += mapRect(
+                        RectPx(
+                            outer.x0 + borderPx + col * frame.cellSizePx,
+                            outer.y0 + borderPx + row * frame.cellSizePx,
+                            outer.x0 + borderPx + (col + 1) * frame.cellSizePx,
+                            outer.y0 + borderPx + (row + 1) * frame.cellSizePx,
+                        ),
+                    )
+                    cellValues += bitmap[row][col]
+                }
+            }
+            // The marker's own boundary vertices in its own order: top-left, top-right,
+            // bottom-right, bottom-left, then transformed with the pattern.
+            val ownCorners = listOf(
+                PointPx(outer.x0, outer.y0),
+                PointPx(outer.x1, outer.y0),
+                PointPx(outer.x1, outer.y1),
+                PointPx(outer.x0, outer.y1),
+            ).map { point ->
+                mapPointToDrawable(
+                    frame.patternRotationDeg, frame.patternWidthPx, frame.patternHeightPx,
+                    frame.offsetX, frame.offsetY, point.x, point.y,
+                )
+            }
+            MarkerLayout(
+                id = id,
+                dictionary = ArUcoDict4x4_50.DICTIONARY,
+                markerSizeBits = ArUcoDict4x4_50.MARKER_SIZE_BITS,
+                borderBits = ArUcoDict4x4_50.BORDER_BITS,
+                cellSizePx = frame.cellSizePx,
+                quietZonePx = frame.quietZonePx,
+                cornersPx = ownCorners,
+                quietRectPx = mapRect(quiet),
+                outerRectPx = mapRect(outer),
+                cellRects = cellRects,
+                cellValues = cellValues,
+            )
+        }
+
+        val layout = PatternLayout(
+            layoutId = layoutId,
+            profile = geometry.layoutProfile,
+            geometry = geometry,
+            drawableWidthPx = frame.drawableWidthPx,
+            drawableHeightPx = frame.drawableHeightPx,
+            coordinateSystem = COORDINATE_SYSTEM,
+            patternRotationDeg = frame.patternRotationDeg,
+            patternWidthPx = frame.patternWidthPx,
+            patternHeightPx = frame.patternHeightPx,
+            patternToDrawable = patternToDrawableMatrix(
+                frame.patternRotationDeg,
+                frame.patternWidthPx,
+                frame.patternHeightPx,
+                frame.offsetX,
+                frame.offsetY,
+            ).toList(),
+            dynamicRectPx = mapRect(frame.dynamicLogical),
+            modules = logicalModules.map { ModuleRect(it.index, mapRect(it.rectPx)) },
+            padding = logicalPadding.map { PaddingSlot(it.slotIndex, mapRect(it.rectPx), it.level) },
+            markers = markers,
+            levelLow = levelLow,
+            levelHigh = levelHigh,
+        )
+
+        val drawableRect = RectPx(0, 0, frame.drawableWidthPx, frame.drawableHeightPx)
+        require(drawableRect.contains(layout.dynamicRectPx)) {
+            "dynamic area ${layout.dynamicRectPx} leaves the drawable $drawableRect"
+        }
+        layout.markers.forEach { marker ->
+            require(drawableRect.contains(marker.quietRectPx)) {
+                "marker ${marker.id} quiet zone ${marker.quietRectPx} leaves the drawable $drawableRect"
+            }
+        }
+        return layout
+    }
+
+    /**
+     * The parts of the geometry that depend only on the drawable size and rotation: the
+     * logical canvas, marker blocks, dynamic rectangle and centring offsets. The module grid
+     * itself is placed later, from the geometry profile.
+     */
+    private class CanvasFrame(
+        val drawableWidthPx: Int,
+        val drawableHeightPx: Int,
+        val patternRotationDeg: Int,
+        val patternWidthPx: Int,
+        val patternHeightPx: Int,
+        val offsetX: Int,
+        val offsetY: Int,
+        val cellSizePx: Int,
+        val quietZonePx: Int,
+        val markerOuterPx: Int,
+        val quietTopLeft: RectPx,
+        val quietTopRight: RectPx,
+        val quietBottomRight: RectPx,
+        val quietBottomLeft: RectPx,
+        val dynamicLogical: RectPx,
+    )
+
+    private fun canvasFrame(
+        drawableWidthPx: Int,
+        drawableHeightPx: Int,
+        patternRotationDeg: Int,
+    ): CanvasFrame {
         require(drawableWidthPx > 0 && drawableHeightPx > 0) {
             "drawable size must be positive, got ${drawableWidthPx}x$drawableHeightPx"
         }
@@ -62,9 +276,6 @@ object PatternLayoutBuilder {
         val quarterTurn = patternRotationDeg % 180 != 0
         val patternWidthPx = if (quarterTurn) rotatedHeightPx else rotatedWidthPx
         val patternHeightPx = if (quarterTurn) rotatedWidthPx else rotatedHeightPx
-        require(patternWidthPx >= profile.moduleCount) {
-            "pattern width $patternWidthPx px cannot hold ${profile.moduleCount} ${profile.name} modules"
-        }
 
         val cellSizePx = maxOf(
             MIN_CELL_SIZE_PX,
@@ -89,115 +300,31 @@ object PatternLayoutBuilder {
         )
         val quietBottomLeft = RectPx(0, patternHeightPx - markerBlockPx, markerBlockPx, patternHeightPx)
 
-        val dynamicLogical = RectPx(0, markerBlockPx, patternWidthPx, patternHeightPx - markerBlockPx)
-
-        val moduleCount = profile.moduleCount
-        val boundaries = IntArray(moduleCount + 1) { index ->
-            dynamicLogical.x0 + index * dynamicLogical.widthPx / moduleCount
-        }
-        val logicalModules = List(moduleCount) { index ->
-            ModuleRect(
-                index,
-                RectPx(boundaries[index], dynamicLogical.y0, boundaries[index + 1], dynamicLogical.y1),
-            )
-        }
-
         val offsetX = (drawableWidthPx - rotatedWidthPx) / 2
         val offsetY = (drawableHeightPx - rotatedHeightPx) / 2
-        val mapRect: (RectPx) -> RectPx = { rect ->
-            mapRectToDrawable(
-                patternRotationDeg, patternWidthPx, patternHeightPx, offsetX, offsetY, rect,
-            )
-        }
 
-        val markers = listOf(
-            0 to quietTopLeft,
-            1 to quietTopRight,
-            2 to quietBottomRight,
-            3 to quietBottomLeft,
-        ).map { (id, quiet) ->
-            val outer = RectPx(
-                quiet.x0 + quietZonePx,
-                quiet.y0 + quietZonePx,
-                quiet.x0 + quietZonePx + markerOuterPx,
-                quiet.y0 + quietZonePx + markerOuterPx,
-            )
-            val bitmap = ArUcoDict4x4_50.bitmap(id)
-            // The black edge is one BORDER_BITS cell wide on every side, so the 4x4 data
-            // cells are inset from the black outer edge by that border, not flush with it.
-            val borderPx = ArUcoDict4x4_50.BORDER_BITS * cellSizePx
-            val cellRects = ArrayList<RectPx>(bitmap.size * bitmap.size)
-            val cellValues = ArrayList<Int>(bitmap.size * bitmap.size)
-            for (row in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
-                for (col in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
-                    cellRects += mapRect(
-                        RectPx(
-                            outer.x0 + borderPx + col * cellSizePx,
-                            outer.y0 + borderPx + row * cellSizePx,
-                            outer.x0 + borderPx + (col + 1) * cellSizePx,
-                            outer.y0 + borderPx + (row + 1) * cellSizePx,
-                        ),
-                    )
-                    cellValues += bitmap[row][col]
-                }
-            }
-            // The marker's own boundary vertices in its own order: top-left, top-right,
-            // bottom-right, bottom-left, then transformed with the pattern.
-            val ownCorners = listOf(
-                PointPx(outer.x0, outer.y0),
-                PointPx(outer.x1, outer.y0),
-                PointPx(outer.x1, outer.y1),
-                PointPx(outer.x0, outer.y1),
-            ).map { point ->
-                mapPointToDrawable(
-                    patternRotationDeg, patternWidthPx, patternHeightPx,
-                    offsetX, offsetY, point.x, point.y,
-                )
-            }
-            MarkerLayout(
-                id = id,
-                dictionary = ArUcoDict4x4_50.DICTIONARY,
-                markerSizeBits = ArUcoDict4x4_50.MARKER_SIZE_BITS,
-                borderBits = ArUcoDict4x4_50.BORDER_BITS,
-                cellSizePx = cellSizePx,
-                quietZonePx = quietZonePx,
-                cornersPx = ownCorners,
-                quietRectPx = mapRect(quiet),
-                outerRectPx = mapRect(outer),
-                cellRects = cellRects,
-                cellValues = cellValues,
-            )
-        }
-
-        val layout = PatternLayout(
-            layoutId = layoutId,
-            profile = profile,
+        return CanvasFrame(
             drawableWidthPx = drawableWidthPx,
             drawableHeightPx = drawableHeightPx,
-            coordinateSystem = COORDINATE_SYSTEM,
             patternRotationDeg = patternRotationDeg,
             patternWidthPx = patternWidthPx,
             patternHeightPx = patternHeightPx,
-            patternToDrawable = patternToDrawableMatrix(
-                patternRotationDeg, patternWidthPx, patternHeightPx, offsetX, offsetY,
-            ).toList(),
-            dynamicRectPx = mapRect(dynamicLogical),
-            modules = logicalModules.map { ModuleRect(it.index, mapRect(it.rectPx)) },
-            markers = markers,
-            levelLow = levelLow,
-            levelHigh = levelHigh,
+            offsetX = offsetX,
+            offsetY = offsetY,
+            cellSizePx = cellSizePx,
+            quietZonePx = quietZonePx,
+            markerOuterPx = markerOuterPx,
+            quietTopLeft = quietTopLeft,
+            quietTopRight = quietTopRight,
+            quietBottomRight = quietBottomRight,
+            quietBottomLeft = quietBottomLeft,
+            dynamicLogical = RectPx(
+                0,
+                markerBlockPx,
+                patternWidthPx,
+                patternHeightPx - markerBlockPx,
+            ),
         )
-
-        val drawableRect = RectPx(0, 0, drawableWidthPx, drawableHeightPx)
-        require(drawableRect.contains(layout.dynamicRectPx)) {
-            "dynamic area ${layout.dynamicRectPx} leaves the drawable $drawableRect"
-        }
-        layout.markers.forEach { marker ->
-            require(drawableRect.contains(marker.quietRectPx)) {
-                "marker ${marker.id} quiet zone ${marker.quietRectPx} leaves the drawable $drawableRect"
-            }
-        }
-        return layout
     }
 }
 

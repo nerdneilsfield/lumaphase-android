@@ -105,6 +105,8 @@ T4 首版已报告，状态 reported、未接受未提交。协调者核对原�
 
 ## 进展与未验证项
 
+CR-001增量已实现并独立复核通过：新默认手机网格F68-G9x8/C52-G9x6，实际Surface横向选F68-G6x12/C52-G5x12，旧F68/C52单排保留。schema1.1、padding独立导出并实画、几何身份和原T4路径保持；以共同24placement/14payload及全65536载荷重排检查，91测试零失败/错误/跳过。最终APK SHA-256 `16680556cfc4e97460792cf4516ae441219b17c8edd2b0eae10c740262a2d543`。F1方向修复按Surface宽高决定而非扣marker动态区。报告 `/tmp/lumaphase-android-cr001-evidence.md`、独立审阅 `/tmp/lumaphase-android-cr001-review.md`；真机、production JsonWriter字节、实际EGL/GL像素和SAF仍未验证，不作为现场指标通过证据。
+
 Planner 结果已读取并经协调者收敛：舍弃手写泛用 JSON 框架、为未来预建的注册器和重复数据类型；原生桥用 eglGetProcAddress；时钟用 System.nanoTime；未引入新平台兼容层。另一探索代理发生 HTTP 524，已要求停止扩展检索、交付已有结论，不将其网络故障作为开工依赖。
 
 环境验证：`/opt/homebrew/opt/openjdk@21/bin/java -version` 返回 21.0.13；通过显式 JAVA_HOME 可运行，当前代理进程未继承环境变量。`sdkmanager` 为已弃用入口，新的 `android sdk --help` 已完成下载初始化并退出 0；支持 list/install 子命令，但尚未核实 SDK 平台包已安装。T1 实现者负责按帮助核实安装需求和构建结果。

@@ -14,6 +14,7 @@ import android.view.WindowInsetsController
 import android.view.WindowManager
 import dev.lumaphase.android.export.SessionExporter
 import dev.lumaphase.android.export.SessionJson
+import dev.lumaphase.android.layout.LayoutChoice
 import dev.lumaphase.android.layout.PatternLayoutBuilder
 import dev.lumaphase.android.protocol.LayoutProfile
 import dev.lumaphase.android.render.DynamicPatternSurface
@@ -52,7 +53,7 @@ import java.io.StringWriter
 class DynamicPreviewActivity : Activity() {
 
     private lateinit var surfaceView: DynamicPatternSurface
-    private lateinit var profile: LayoutProfile
+    private lateinit var layoutChoice: LayoutChoice
     private lateinit var runHost: PreviewRunHost
 
     private var patternRotationDeg = 0
@@ -106,9 +107,11 @@ class DynamicPreviewActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        profile = LayoutProfile.valueOf(
+        val legacyProfile = LayoutProfile.valueOf(
             intent.getStringExtra(EXTRA_PROFILE) ?: LayoutProfile.F68.name,
         )
+        layoutChoice = LayoutChoice.forWire(intent.getStringExtra(EXTRA_LAYOUT_CHOICE))
+            ?: LayoutChoice.legacy(legacyProfile)
         patternRotationDeg = intent.getIntExtra(EXTRA_ROTATION_DEG, 0)
         experimentProfile = intent.getStringExtra(EXTRA_EXPERIMENT_PROFILE)
             ?: SessionConstants.EXPERIMENT_PROFILE
@@ -143,7 +146,7 @@ class DynamicPreviewActivity : Activity() {
 
         surfaceView = DynamicPatternSurface(this)
         surfaceView.configureDynamic(
-            profile,
+            layoutChoice.layoutProfile,
             patternRotationDeg,
             runState,
             session,
@@ -156,7 +159,7 @@ class DynamicPreviewActivity : Activity() {
             try {
                 val layout = PatternLayoutBuilder.build(
                     layoutIdFor(widthPx, heightPx),
-                    profile,
+                    layoutChoice,
                     widthPx,
                     heightPx,
                     patternRotationDeg,
@@ -191,7 +194,8 @@ class DynamicPreviewActivity : Activity() {
         }
         Log.i(
             TAG,
-            "display ${profile.name} pattern_rotation_deg=$patternRotationDeg " +
+            "display ${layoutChoice.layoutProfile.name} choice=${layoutChoice.wire} " +
+                "pattern_rotation_deg=$patternRotationDeg " +
                 "session=${session.sessionId} phase=${session.currentPhase()}",
         )
     }
@@ -323,16 +327,18 @@ class DynamicPreviewActivity : Activity() {
     }
 
     private fun layoutIdFor(widthPx: Int, heightPx: Int): String {
-        val geometry = (widthPx.toLong() shl 32) or (heightPx.toLong() and 0xFFFFFFFFL)
-        if (geometry != ActiveSession.currentGeometry) {
-            if (ActiveSession.currentGeometry != null) {
-                // A different geometry is a different immutable layout identity. The new segment
-                // itself is opened by the render thread's display-start report, after the new
-                // layout has been registered.
+        // The drawable size, the pattern rotation and the requested geometry all decide the
+        // immutable layout object. Any change is a new layout identity and a new segment; an
+        // old layout is never overwritten by a new geometry.
+        val key = "$widthPx:$heightPx:$patternRotationDeg:${layoutChoice.wire}"
+        if (key != ActiveSession.currentLayoutKey) {
+            if (ActiveSession.currentLayoutKey != null) {
+                // The new segment itself is opened by the render thread's display-start report,
+                // after the new layout has been registered.
                 ActiveSession.controller?.endSegment(SegmentEndReason.CONFIGURATION_CHANGED)
                 ActiveSession.controller?.expectSegmentReason(SegmentStartReason.CONFIGURATION_CHANGED)
             }
-            ActiveSession.currentGeometry = geometry
+            ActiveSession.currentLayoutKey = key
             ActiveSession.currentLayoutId = "dynamic-layout-${ActiveSession.layoutCounter++}"
         }
         return ActiveSession.currentLayoutId
@@ -365,6 +371,7 @@ class DynamicPreviewActivity : Activity() {
     companion object {
         private const val TAG = "OptcSessionHost"
         private const val EXTRA_PROFILE = "extra_profile"
+        private const val EXTRA_LAYOUT_CHOICE = "extra_layout_choice"
         private const val EXTRA_ROTATION_DEG = "extra_rotation_deg"
         private const val EXTRA_EXPERIMENT_PROFILE = "extra_experiment_profile"
         private const val EXTRA_START_SESSION = "extra_start_session"
@@ -377,12 +384,13 @@ class DynamicPreviewActivity : Activity() {
 
         fun intent(
             context: Context,
-            profile: LayoutProfile,
+            choice: LayoutChoice,
             rotationDeg: Int,
             experimentProfile: String,
             startSession: Boolean,
         ): Intent = Intent(context, DynamicPreviewActivity::class.java)
-            .putExtra(EXTRA_PROFILE, profile.name)
+            .putExtra(EXTRA_PROFILE, choice.layoutProfile.name)
+            .putExtra(EXTRA_LAYOUT_CHOICE, choice.wire)
             .putExtra(EXTRA_ROTATION_DEG, rotationDeg)
             .putExtra(EXTRA_EXPERIMENT_PROFILE, experimentProfile)
             .putExtra(EXTRA_START_SESSION, startSession)

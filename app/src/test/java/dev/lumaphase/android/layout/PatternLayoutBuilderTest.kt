@@ -337,7 +337,7 @@ class PatternLayoutBuilderTest {
 
                 assertEquals(
                     "$label painted rectangle count",
-                    layout.modules.size + layout.markers.size * 18,
+                    layout.modules.size + layout.padding.size + layout.markers.size * 18,
                     rects.size,
                 )
                 val drawable = RectPx(0, 0, widthPx, heightPx)
@@ -363,6 +363,160 @@ class PatternLayoutBuilderTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun gridChoiceFollowsTheSurfaceOrientationForEveryRotation() {
+        // Portrait targets, including a square; 1536x2048 keeps a 3:4 aspect that is not the
+        // Pixel default. Every rotation must keep the same surface-based choice.
+        val portraitSurfaces = listOf(
+            1080 to 1920,
+            1440 to 2560,
+            1536 to 2048,
+            1080 to 1080,
+        )
+        val landscapeSurfaces = listOf(
+            1920 to 1080,
+            2560 to 1440,
+            2048 to 1536,
+        )
+        for ((widthPx, heightPx) in portraitSurfaces) {
+            for (rotationDeg in PatternLayoutBuilder.ROTATIONS_DEG) {
+                val label = "portrait ${widthPx}x$heightPx rot=$rotationDeg"
+                assertEquals(
+                    label,
+                    GeometryProfile.F68_G9X8,
+                    buildChoice(LayoutChoice.F68_GRID, widthPx, heightPx, rotationDeg).geometry,
+                )
+                assertEquals(
+                    label,
+                    GeometryProfile.C52_G9X6,
+                    buildChoice(LayoutChoice.C52_GRID, widthPx, heightPx, rotationDeg).geometry,
+                )
+            }
+        }
+        for ((widthPx, heightPx) in landscapeSurfaces) {
+            for (rotationDeg in PatternLayoutBuilder.ROTATIONS_DEG) {
+                val label = "landscape ${widthPx}x$heightPx rot=$rotationDeg"
+                assertEquals(
+                    label,
+                    GeometryProfile.F68_G6X12,
+                    buildChoice(LayoutChoice.F68_GRID, widthPx, heightPx, rotationDeg).geometry,
+                )
+                assertEquals(
+                    label,
+                    GeometryProfile.C52_G5X12,
+                    buildChoice(LayoutChoice.C52_GRID, widthPx, heightPx, rotationDeg).geometry,
+                )
+            }
+        }
+
+        // The single-row choices are unaffected by orientation and rotation.
+        assertEquals(
+            GeometryProfile.F68,
+            buildChoice(LayoutChoice.F68_SINGLE, 1080, 2400, 0).geometry,
+        )
+        assertEquals(
+            GeometryProfile.C52,
+            buildChoice(LayoutChoice.C52_SINGLE, 2400, 1080, 90).geometry,
+        )
+    }
+
+    @Test
+    fun gridLayoutsTileTheDynamicAreaAndKeepPairsInOneLogicalRow() {
+        for ((widthPx, heightPx) in drawableCases) {
+            for (rotationDeg in PatternLayoutBuilder.ROTATIONS_DEG) {
+                for (choice in listOf(LayoutChoice.F68_GRID, LayoutChoice.C52_GRID)) {
+                    val layout = buildChoice(choice, widthPx, heightPx, rotationDeg)
+                    val logical = LogicalView(layout)
+                    val label = "${choice.wire} ${widthPx}x$heightPx rot=$rotationDeg"
+                    assertEquals(label, choice.geometryFor(widthPx, heightPx), layout.geometry)
+
+                    val geometry = layout.geometry
+                    assertEquals(label, geometry.moduleCount, layout.modules.size)
+                    assertEquals(label, geometry.paddingCount, layout.padding.size)
+                    val allRects = layout.modules.map { it.rectPx } + layout.padding.map { it.rectPx }
+                    assertEquals(
+                        "$label slots must cover exactly the dynamic area",
+                        layout.dynamicRectPx,
+                        allRects.reduce { left, right -> left.union(right) },
+                    )
+                    assertEquals(
+                        "$label slots must not overlap",
+                        layout.dynamicRectPx.widthPx * layout.dynamicRectPx.heightPx,
+                        allRects.sumOf { it.widthPx * it.heightPx },
+                    )
+                    allRects.forEach { rect ->
+                        assertTrue("$label $rect leaves the dynamic area", layout.dynamicRectPx.contains(rect))
+                    }
+
+                    // Complementary protocol pairs must stay adjacent inside one logical row.
+                    val logicalModules = layout.modules.map { unmapRect(logical, it.rectPx) }
+                    var index = 0
+                    while (index < logicalModules.size) {
+                        val first = logicalModules[index]
+                        val second = logicalModules[index + 1]
+                        assertEquals("$label pair $index row", first.y0, second.y0)
+                        assertEquals("$label pair $index row", first.y1, second.y1)
+                        assertEquals("$label pair $index adjacency", first.x1, second.x0)
+                        index += 2
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
+    fun gridPaddingIsIndependentAndPaintedWithItsActualLevel() {
+        val layout = buildChoice(LayoutChoice.F68_GRID, 1080, 2400, 0)
+        assertEquals(4, layout.padding.size)
+        layout.padding.forEachIndexed { index, slot ->
+            assertEquals(layout.geometry.moduleCount + index, slot.slotIndex)
+            assertEquals(if (index % 2 == 0) 32 else 224, slot.level)
+            assertTrue(
+                "padding must not overlap a protocol module",
+                layout.modules.none { it.rectPx.intersects(slot.rectPx) },
+            )
+        }
+        val pattern = PatternEncoder.encode(7uL, layout.profile)
+        val painted = paintRects(layout, pattern)
+        layout.padding.forEach { slot ->
+            assertTrue(
+                "padding slot ${slot.slotIndex} must be drawn with its level",
+                painted.any { it.rect == slot.rectPx && it.level == slot.level },
+            )
+        }
+        assertEquals(68, layout.modules.size)
+        assertEquals(72, layout.modules.size + layout.padding.size)
+    }
+
+    private fun buildChoice(
+        choice: LayoutChoice,
+        widthPx: Int,
+        heightPx: Int,
+        rotationDeg: Int,
+    ): PatternLayout = PatternLayoutBuilder.build(
+        "layout-grid",
+        choice,
+        widthPx,
+        heightPx,
+        rotationDeg,
+    )
+
+    /** Independent inverse of the builder's rotation, used only to inspect logical rows. */
+    private fun unmapRect(logical: LogicalView, rect: RectPx): RectPx {
+        val corners = listOf(
+            logical.unmap(PointPx(rect.x0, rect.y0)),
+            logical.unmap(PointPx(rect.x1, rect.y0)),
+            logical.unmap(PointPx(rect.x1, rect.y1)),
+            logical.unmap(PointPx(rect.x0, rect.y1)),
+        )
+        return RectPx(
+            corners.minOf { it.x },
+            corners.minOf { it.y },
+            corners.maxOf { it.x },
+            corners.maxOf { it.y },
+        )
     }
 
     private fun build(

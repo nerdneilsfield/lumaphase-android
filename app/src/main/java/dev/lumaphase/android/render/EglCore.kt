@@ -173,26 +173,24 @@ class EglCore {
     }
 
     /**
-     * The render target's native pixel format, built from the attributes actually obtained
-     * rather than assumed.
+     * The render target's pixel format as the contract's fixed description of the chosen
+     * EGLConfig: the five attributes actually queried, in the fixed order, or `UNKNOWN` if any
+     * query fails. It never substitutes a requested format for the obtained one.
      */
     fun pixelFormatName(): String {
         val chosen = config ?: return UNKNOWN
-        val bufferType = IntArray(1)
-        val isRgb = EGL14.eglGetConfigAttrib(display, chosen, EGL14.EGL_COLOR_BUFFER_TYPE, bufferType, 0) &&
-            bufferType[0] == EGL14.EGL_RGB_BUFFER
-        if (!isRgb) return "EGL_LUMINANCE_BUFFER"
-        val red = channelBits(EGL14.EGL_RED_SIZE)
-        val green = channelBits(EGL14.EGL_GREEN_SIZE)
-        val blue = channelBits(EGL14.EGL_BLUE_SIZE)
-        val alpha = channelBits(EGL14.EGL_ALPHA_SIZE)
-        return "EGL_RGB_BUFFER/R${red}G${green}B${blue}A$alpha"
+        return eglConfigDescriptionOrUnknown(
+            red = configValue(chosen, EGL14.EGL_RED_SIZE),
+            green = configValue(chosen, EGL14.EGL_GREEN_SIZE),
+            blue = configValue(chosen, EGL14.EGL_BLUE_SIZE),
+            alpha = configValue(chosen, EGL14.EGL_ALPHA_SIZE),
+            bufferSize = configValue(chosen, EGL14.EGL_BUFFER_SIZE),
+        )
     }
 
-    private fun channelBits(attribute: Int): Int {
-        val chosen = config ?: return -1
+    private fun configValue(candidate: EGLConfig, attribute: Int): Int? {
         val value = IntArray(1)
-        if (!EGL14.eglGetConfigAttrib(display, chosen, attribute, value, 0)) return -1
+        if (!EGL14.eglGetConfigAttrib(display, candidate, attribute, value, 0)) return null
         return value[0]
     }
 
@@ -292,4 +290,20 @@ class EglCore {
         const val EGL_GL_COLORSPACE_LINEAR = 0x308A
         const val UNKNOWN = "UNKNOWN"
     }
+}
+
+/**
+ * The contract's fixed, platform-limited pixel-format description. All five attributes must
+ * have been queried successfully; a failure is `UNKNOWN`, never a made-up success value.
+ */
+internal fun eglConfigDescriptionOrUnknown(
+    red: Int?,
+    green: Int?,
+    blue: Int?,
+    alpha: Int?,
+    bufferSize: Int?,
+): String = if (red == null || green == null || blue == null || alpha == null || bufferSize == null) {
+    "UNKNOWN"
+} else {
+    "EGL_CONFIG(R=$red,G=$green,B=$blue,A=$alpha,BUFFER_SIZE=$bufferSize)"
 }

@@ -36,8 +36,14 @@ data class RectPx(val x0: Int, val y0: Int, val x1: Int, val y1: Int) {
 
 data class PointPx(val x: Int, val y: Int)
 
-/** One module of the dynamic code: a vertical band spanning the dynamic area. */
+/** One module of the dynamic code at its final drawable rectangle. */
 data class ModuleRect(val index: Int, val rectPx: RectPx)
+
+/**
+ * One padding slot of a grid layout. It fills the last row but carries no protocol bit;
+ * [level] is the actual 8-bit code value drawn there, alternating low/high.
+ */
+data class PaddingSlot(val slotIndex: Int, val rectPx: RectPx, val level: Int)
 
 /**
  * One ArUco locating marker.
@@ -71,6 +77,7 @@ data class MarkerLayout(
 data class PatternLayout(
     val layoutId: String,
     val profile: LayoutProfile,
+    val geometry: GeometryProfile,
     val drawableWidthPx: Int,
     val drawableHeightPx: Int,
     val coordinateSystem: String,
@@ -81,7 +88,31 @@ data class PatternLayout(
     val patternToDrawable: List<Int>,
     val dynamicRectPx: RectPx,
     val modules: List<ModuleRect>,
+    val padding: List<PaddingSlot>,
     val markers: List<MarkerLayout>,
     val levelLow: Int,
     val levelHigh: Int,
-)
+) {
+    init {
+        require(profile == geometry.layoutProfile) {
+            "layout profile ${profile.name} does not match geometry ${geometry.wire}"
+        }
+        require(modules.size == geometry.moduleCount) {
+            "geometry ${geometry.wire} needs ${geometry.moduleCount} modules, got ${modules.size}"
+        }
+        require(padding.size == geometry.paddingCount) {
+            "geometry ${geometry.wire} needs ${geometry.paddingCount} padding slots, got ${padding.size}"
+        }
+        modules.forEachIndexed { index, module ->
+            require(module.index == index) { "module index ${module.index} at position $index" }
+        }
+        padding.forEachIndexed { index, slot ->
+            require(slot.slotIndex == geometry.moduleCount + index) {
+                "padding slot ${slot.slotIndex} at position $index"
+            }
+            require(slot.level == levelLow || slot.level == levelHigh) {
+                "padding level ${slot.level} is not one of $levelLow/$levelHigh"
+            }
+        }
+    }
+}

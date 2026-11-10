@@ -44,8 +44,13 @@ object ActiveSession {
     @Volatile
     var layoutCounter: Int = 0
 
+    /**
+     * Identity of the layout currently registered: drawable size, pattern rotation and the
+     * requested layout choice. A change to any of them is a new immutable layout object and a
+     * new segment; the old layout object is never overwritten.
+     */
     @Volatile
-    var currentGeometry: Long? = null
+    var currentLayoutKey: String? = null
 
     @Volatile
     var currentLayoutId: String = ""
@@ -56,7 +61,7 @@ object ActiveSession {
         this.runState = runState
         runHost = null
         layoutCounter = 0
-        currentGeometry = null
+        currentLayoutKey = null
         currentLayoutId = ""
     }
 

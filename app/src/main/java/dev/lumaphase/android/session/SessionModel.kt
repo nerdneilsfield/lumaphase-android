@@ -283,7 +283,7 @@ object SessionFiles {
 
 /** Constant values the contract fixes. */
 object SessionConstants {
-    const val SCHEMA_VERSION = "1.0"
+    const val SCHEMA_VERSION = "1.1"
     const val PROTOCOL_VERSION = "OPTC-1"
     const val PLATFORM = "ANDROID"
     const val CLOCK_DOMAIN = "ANDROID_MONOTONIC"

@@ -20,11 +20,12 @@ data class PreviewedLayout(
     val drawableWidthPx: Int,
     val drawableHeightPx: Int,
     val profile: LayoutProfile,
+    val geometry: GeometryProfile,
     val patternRotationDeg: Int,
 ) {
     /** Short human-readable identity of the rendered layout. */
     val description: String
-        get() = "${profile.name}, pattern_rotation_deg=$patternRotationDeg, " +
+        get() = "${profile.name}/${geometry.wire}, pattern_rotation_deg=$patternRotationDeg, " +
             "${drawableWidthPx}x$drawableHeightPx px"
 }
 
@@ -55,6 +56,7 @@ object LayoutExport {
         drawableWidthPx = layout.drawableWidthPx,
         drawableHeightPx = layout.drawableHeightPx,
         profile = layout.profile,
+        geometry = layout.geometry,
         patternRotationDeg = layout.patternRotationDeg,
     )
 }

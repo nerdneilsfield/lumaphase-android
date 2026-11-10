@@ -4,6 +4,24 @@
 
 ## 当前增量：CR-001
 
+Android CR-001终版窄复核 `ctx_67de7c59ddca` / `task_e32fe3a39d48` 已通过，F1 ADDRESSED，spec/quality通过。91 tests零失败/错误/跳过，APK SHA-256 `16680556cfc4e97460792cf4516ae441219b17c8edd2b0eae10c740262a2d543`；协调者已核对关键修复、XML和APK，审阅者核对全部22文件hash。新旧布局/静态动态卡片导出/padding/schema1.1均接受为软件实现，按整文件本地提交；无Android设备的JsonWriter字节、真实EGL属性/GL像素/SAF/相机指标仍未验证。
+
+Android终版复核quality通过、spec仅F1方向判定待修：原实现按扣marker后的dynamic矩形方向，1080×1920等竖屏误选横向grid。协调裁决按实际Surface width/height选择（高>=宽portrait，反之landscape），rotation独立，已交原writer窄修并补16:9/平板/方形/四旋转外部预期。其余padding/编码/四旋转/会话/导出/EGL格式接线通过，仍未提交CR产品。
+
+Android CR-001已reported，91测试零失败/错误/跳过；另一专用Android tab a668bba3-7f06-43df-acfd-f5c63c09c07a 已回归负责终版只读独立复核 `ctx_deb98b1adcd7` / `task_2f2a1af138bb`，writer b0f15fd7冻结当前树。两专用Android会话按实现/独立验证配合，不并发写同一仓库或重复Gradle。最终报告 `/tmp/lumaphase-android-cr001-evidence.md`，审阅 `/tmp/lumaphase-android-cr001-review.md` 待回；尚未接受提交。
+
+Mac CR-001已本地提交 `d455e46557513c9175075b13238c0197536f80b9`（feat: add CR-001 grid layouts and schema 1.1），协调者用git log核对HEAD。作者报告17整文件暂存与已审快照一致，剩余仅.cw，未push/tag/发布；软件接受与物理未验证边界不变。Android与Python任务继续运行，Mac无需重复构建。
+
+Mac CR-001独立审阅 `/tmp/lumaphase-macos-cr001-review.md` 已返回spec/quality通过。协调者读取全文并重算Sources聚合hash `6b7115b5fe429df783c02cee1fb7fb8aaec05f37e46ec836b0a90dfbf5739197` 与已审树一致，接受软件实现，已交Mac作者整文件本地提交产品/测试及其依赖的contract/fixture，禁push/tag/发布。73测试含离屏GPU/真实JSON检查有效；前台UI、实际呈现/相机与物理指标仍未验证。Android仍独立开发网格，Python继续原R1-R3，不因Mac接受替代两端任务。
+
+Python子协调者报告原core整文件checkpoint已提交 `598006e`（25文件），提交前index与实测工作区一致，导出暂存树快照178 tests及ruff/format/ty通过；此为其报告，非原全部能力完成。R1-R3唯一writer为tab dcc247f1-c270-4820-83a2-4cb13838605a，`ctx_6cc1742b1873` / `task_020cd22a98f5`，范围report/plotting及对应测试。CR与R4/R5后续串行，统一1.1契约/fixture未混入原core完成声明。Android/Mac任务继续，不因Python checkpoint等待。
+
+Mac网格已reported（ctx_fc5988b702db），73测试、离屏Metal与真实JSON证据见 `/tmp/lumaphase-cr001-recon/macos-implementation-report.md`，未提交未接受。已派Android空闲原作者只读跨仓库复核 `ctx_5af5f90da782` / `task_241da145628f`，不写Android；Android网格唯一作者继续 `ctx_9d8b322031e5`。Python子Run已获解除跨仓库产品冻结授权：先保存原core整文件checkpoint，再以单一writer补R1-R3及后续CR/R4/R5；允许不同仓库并行，不再按历史“Mac唯一token”排队。Python允许整文件本地提交，不push；派发身份及证据待子协调者回报。
+
+用户纠正调度：Android不能因Mac实现而停等。共享格式已定稿，立即允许独立仓库产品实现并行，每个仓库内部仍为单一作者。Android CR-001已派原修复作者tab b0f15fd7-7f5a-48b4-935d-561ee2cae54c，Mac继续原任务；不再采用下文历史记录的“三仓库全串行”约束。Android必须保留已实现原单排和原T4，新增手机网格/横向选择及schema1.1导出，完成后独立核验。
+
+Python旧writer均已明确冻结。协调者读取 `/private/tmp/lumaphase-writer-status-20261110.md`，重新计算snapshot的全部产品文件hash，与当前工作区一致。已有178测试、公开8组+20ms smoke、Agg PNG和非editable包导入证据；仅接受现有实现固定快照，不接受原方案完成。原参考显示时间重建、跨帧回绕DP、逐eye中点差、histogram按rig/来源分层及REFRESH粒度仍有缺口，已要求在原implementation-plan记录并后续串行补齐。Mac继续唯一新增产品writer，sync暂不改产品或旧index。
+
 契约及fixture已核验并字节同步三端。协调者独立重算24个placement案例和14个payload全部通过，修正文中首padding右边界83→82。当前contract SHA-256 `64daa324c882bb1eac35cbc6c9d925c63648e3103ceab9052136c133cf6e2e06`，fixture SHA-256 `fce0b745d81059254c697802da7f2e7af11075f7eabb420a261dabcc7469d2d2`。Mac产品实现已启动，唯一新增产品作者为Mac原会话，`ctx_fc5988b702db` / `task_b6bdd1e66f3b`；Android网格、sync CR产品实现排在其后。Android原T4软件复核通过并提交 `9ea13ae`，真机/SAF/JsonWriter字节未验证仍保留。
 
 sync 当前writer已定位：tab `dcc247f1-c270-4820-83a2-4cb13838605a` / `ctx_f326706396f9` / `task_b8c624af25d1`，其子协调者已发冻结指令，待本人确认；不另派writer。子协调者报告原core现工作区178 tests通过、ruff/format/ty通过，前三旧失败为合同修订后旧fixture预期，第四DELTA_HISTOGRAM为实际实现遗漏已修；这些尚为子agent证据，未由总协调独立接受。已要求冻结后按实际工作区而非旧index核验原core同一快照、smoke/绘图/安装包及遗留项。

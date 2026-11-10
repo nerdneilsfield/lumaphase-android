@@ -8,6 +8,8 @@ import android.util.Log
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
+import dev.lumaphase.android.layout.GeometryProfile
+import dev.lumaphase.android.layout.LayoutChoice
 import dev.lumaphase.android.layout.LayoutExport
 import dev.lumaphase.android.layout.LayoutJson
 import dev.lumaphase.android.layout.PatternLayout
@@ -40,10 +42,11 @@ class PatternPreviewActivity : Activity() {
         super.onCreate(savedInstanceState)
 
         val profileName = intent.getStringExtra(EXTRA_PROFILE) ?: LayoutProfile.F68.name
-        val profile = LayoutProfile.valueOf(profileName)
+        val choice = LayoutChoice.forWire(intent.getStringExtra(EXTRA_LAYOUT_CHOICE))
+            ?: LayoutChoice.legacy(LayoutProfile.valueOf(profileName))
         val rotationDeg = intent.getIntExtra(EXTRA_ROTATION_DEG, 0)
         val renderSeq = intent.getStringExtra(EXTRA_RENDER_SEQ)?.toULongOrNull() ?: 0uL
-        val encoded = PatternEncoder.encode(renderSeq, profile)
+        val encoded = PatternEncoder.encode(renderSeq, choice.layoutProfile)
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // The window must always fill the display, otherwise a transient system-bar reveal
@@ -58,7 +61,7 @@ class PatternPreviewActivity : Activity() {
             try {
                 val layout = PatternLayoutBuilder.build(
                     PatternLayoutBuilder.STATIC_LAYOUT_ID,
-                    profile,
+                    choice,
                     widthPx,
                     heightPx,
                     rotationDeg,
@@ -71,7 +74,11 @@ class PatternPreviewActivity : Activity() {
         }
         surfaceView.onLayoutRendered = { layout -> reportRenderedLayout(layout) }
         setContentView(surfaceView)
-        Log.i(TAG, "preview ${profile.name} pattern_rotation_deg=$rotationDeg render_seq=$renderSeq")
+        Log.i(
+            TAG,
+            "preview ${choice.layoutProfile.name} choice=${choice.wire} " +
+                "pattern_rotation_deg=$rotationDeg render_seq=$renderSeq",
+        )
     }
 
     /** Publishes the drawn layout as the activity result; the most recent render wins. */
@@ -84,6 +91,7 @@ class PatternPreviewActivity : Activity() {
                 .putExtra(RESULT_DRAWABLE_WIDTH_PX, snapshot.drawableWidthPx)
                 .putExtra(RESULT_DRAWABLE_HEIGHT_PX, snapshot.drawableHeightPx)
                 .putExtra(RESULT_PROFILE, snapshot.profile.name)
+                .putExtra(RESULT_GEOMETRY_PROFILE, snapshot.geometry.wire)
                 .putExtra(RESULT_PATTERN_ROTATION_DEG, snapshot.patternRotationDeg),
         )
         Log.i(TAG, "reported rendered layout ${snapshot.description}")
@@ -117,6 +125,7 @@ class PatternPreviewActivity : Activity() {
     companion object {
         private const val TAG = "OptcPreview"
         private const val EXTRA_PROFILE = "extra_profile"
+        private const val EXTRA_LAYOUT_CHOICE = "extra_layout_choice"
         private const val EXTRA_ROTATION_DEG = "extra_rotation_deg"
         private const val EXTRA_RENDER_SEQ = "extra_render_seq"
 
@@ -124,15 +133,17 @@ class PatternPreviewActivity : Activity() {
         const val RESULT_DRAWABLE_WIDTH_PX = "result_drawable_width_px"
         const val RESULT_DRAWABLE_HEIGHT_PX = "result_drawable_height_px"
         const val RESULT_PROFILE = "result_profile"
+        const val RESULT_GEOMETRY_PROFILE = "result_geometry_profile"
         const val RESULT_PATTERN_ROTATION_DEG = "result_pattern_rotation_deg"
 
         fun intent(
             context: Context,
-            profile: LayoutProfile,
+            choice: LayoutChoice,
             rotationDeg: Int,
             renderSeq: ULong,
         ): Intent = Intent(context, PatternPreviewActivity::class.java)
-            .putExtra(EXTRA_PROFILE, profile.name)
+            .putExtra(EXTRA_PROFILE, choice.layoutProfile.name)
+            .putExtra(EXTRA_LAYOUT_CHOICE, choice.wire)
             .putExtra(EXTRA_ROTATION_DEG, rotationDeg)
             .putExtra(EXTRA_RENDER_SEQ, renderSeq.toString())
 
@@ -147,11 +158,14 @@ class PatternPreviewActivity : Activity() {
             val heightPx = result.getIntExtra(RESULT_DRAWABLE_HEIGHT_PX, -1)
             val rotationDeg = result.getIntExtra(RESULT_PATTERN_ROTATION_DEG, Int.MIN_VALUE)
             val profileName = result.getStringExtra(RESULT_PROFILE) ?: return null
+            val geometryName = result.getStringExtra(RESULT_GEOMETRY_PROFILE) ?: return null
             if (json.isEmpty() || widthPx <= 0 || heightPx <= 0 || rotationDeg == Int.MIN_VALUE) {
                 return null
             }
             val profile = runCatching { LayoutProfile.valueOf(profileName) }.getOrNull() ?: return null
-            return PreviewedLayout(json, widthPx, heightPx, profile, rotationDeg)
+            val geometry = GeometryProfile.forWire(geometryName) ?: return null
+            if (geometry.layoutProfile != profile) return null
+            return PreviewedLayout(json, widthPx, heightPx, profile, geometry, rotationDeg)
         }
     }
 }

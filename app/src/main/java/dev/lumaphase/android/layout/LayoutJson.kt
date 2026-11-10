@@ -5,24 +5,33 @@ import java.io.StringWriter
 import java.io.Writer
 
 /**
- * Writes the OPTC-1 `layout.json` container (`schema_version` 1.0) for one or more static
+ * Writes the OPTC-1 `layout.json` container (`schema_version` 1.1) for one or more static
  * layouts, using Android's own [JsonWriter] rather than a hand-written JSON layer.
  *
  * This file is the layout collection only. It is not a session directory and does not
  * claim captured frames, timestamps or a complete session.
  *
- * Key names and types follow OPTC-1 sections 3.1 and 4. Coordinates are final drawable
+ * Key names and types follow OPTC-1 sections 3.1, 3.3 and 4. Coordinates are final drawable
  * output pixels with the top-left origin and half-open rectangles. `pattern_to_drawable`
- * is the 3x3 row-major matrix written as three arrays of three.
+ * is the 3x3 row-major matrix written as three arrays of three. Every layout, including the
+ * single-row F68/C52, carries the complete geometry extension group; padding is a separate
+ * array and never mixed into `modules`.
  */
 object LayoutJson {
-    const val SCHEMA_VERSION = "1.0"
+    const val SCHEMA_VERSION = "1.1"
 
     const val KEY_SCHEMA_VERSION = "schema_version"
     const val KEY_LAYOUTS = "layouts"
 
     const val KEY_LAYOUT_ID = "layout_id"
     const val KEY_LAYOUT_PROFILE = "layout_profile"
+    const val KEY_GEOMETRY_PROFILE = "geometry_profile"
+    const val KEY_GRID_ROWS = "grid_rows"
+    const val KEY_GRID_COLS = "grid_cols"
+    const val KEY_MODULE_COUNT = "module_count"
+    const val KEY_PADDING_COUNT = "padding_count"
+    const val KEY_MODULE_ORDER = "module_order"
+    const val KEY_SAMPLING_INNER_FRACTION = "sampling_inner_fraction"
     const val KEY_DRAWABLE_WIDTH_PX = "drawable_width_px"
     const val KEY_DRAWABLE_HEIGHT_PX = "drawable_height_px"
     const val KEY_COORDINATE_SYSTEM = "coordinate_system"
@@ -32,12 +41,16 @@ object LayoutJson {
     const val KEY_PATTERN_TO_DRAWABLE = "pattern_to_drawable"
     const val KEY_DYNAMIC_RECT_PX = "dynamic_rect_px"
     const val KEY_MODULES = "modules"
+    const val KEY_PADDING = "padding"
     const val KEY_MARKERS = "markers"
     const val KEY_LEVEL_LOW = "level_low"
     const val KEY_LEVEL_HIGH = "level_high"
 
     const val KEY_INDEX = "index"
+    const val KEY_SLOT_INDEX = "slot_index"
+    const val KEY_ROLE = "role"
     const val KEY_RECT_PX = "rect_px"
+    const val KEY_LEVEL = "level"
 
     const val KEY_ID = "id"
     const val KEY_DICTIONARY = "dictionary"
@@ -52,6 +65,13 @@ object LayoutJson {
     val LAYOUT_KEYS: List<String> = listOf(
         KEY_LAYOUT_ID,
         KEY_LAYOUT_PROFILE,
+        KEY_GEOMETRY_PROFILE,
+        KEY_GRID_ROWS,
+        KEY_GRID_COLS,
+        KEY_MODULE_COUNT,
+        KEY_PADDING_COUNT,
+        KEY_MODULE_ORDER,
+        KEY_SAMPLING_INNER_FRACTION,
         KEY_DRAWABLE_WIDTH_PX,
         KEY_DRAWABLE_HEIGHT_PX,
         KEY_COORDINATE_SYSTEM,
@@ -61,12 +81,20 @@ object LayoutJson {
         KEY_PATTERN_TO_DRAWABLE,
         KEY_DYNAMIC_RECT_PX,
         KEY_MODULES,
+        KEY_PADDING,
         KEY_MARKERS,
         KEY_LEVEL_LOW,
         KEY_LEVEL_HIGH,
     )
 
     val MODULE_KEYS: List<String> = listOf(KEY_INDEX, KEY_RECT_PX)
+
+    val PADDING_KEYS: List<String> = listOf(
+        KEY_SLOT_INDEX,
+        KEY_ROLE,
+        KEY_RECT_PX,
+        KEY_LEVEL,
+    )
 
     val MARKER_KEYS: List<String> = listOf(
         KEY_ID,
@@ -101,6 +129,13 @@ object LayoutJson {
         json.beginObject()
         json.name(KEY_LAYOUT_ID).value(layout.layoutId)
         json.name(KEY_LAYOUT_PROFILE).value(layout.profile.name)
+        json.name(KEY_GEOMETRY_PROFILE).value(layout.geometry.wire)
+        json.name(KEY_GRID_ROWS).value(layout.geometry.gridRows.toLong())
+        json.name(KEY_GRID_COLS).value(layout.geometry.gridCols.toLong())
+        json.name(KEY_MODULE_COUNT).value(layout.geometry.moduleCount.toLong())
+        json.name(KEY_PADDING_COUNT).value(layout.geometry.paddingCount.toLong())
+        json.name(KEY_MODULE_ORDER).value(GridPlacement.MODULE_ORDER)
+        json.name(KEY_SAMPLING_INNER_FRACTION).value(GridPlacement.SAMPLING_INNER_FRACTION)
         json.name(KEY_DRAWABLE_WIDTH_PX).value(layout.drawableWidthPx.toLong())
         json.name(KEY_DRAWABLE_HEIGHT_PX).value(layout.drawableHeightPx.toLong())
         json.name(KEY_COORDINATE_SYSTEM).value(layout.coordinateSystem)
@@ -127,6 +162,18 @@ object LayoutJson {
             json.name(KEY_INDEX).value(module.index.toLong())
             json.name(KEY_RECT_PX)
             writeRect(json, module.rectPx)
+            json.endObject()
+        }
+        json.endArray()
+
+        json.name(KEY_PADDING).beginArray()
+        for (slot in layout.padding) {
+            json.beginObject()
+            json.name(KEY_SLOT_INDEX).value(slot.slotIndex.toLong())
+            json.name(KEY_ROLE).value(ROLE_PADDING)
+            json.name(KEY_RECT_PX)
+            writeRect(json, slot.rectPx)
+            json.name(KEY_LEVEL).value(slot.level.toLong())
             json.endObject()
         }
         json.endArray()
@@ -165,4 +212,7 @@ object LayoutJson {
         json.value(rect.y1.toLong())
         json.endArray()
     }
+
+    /** The only role value a padding object may carry (contract section 3.3). */
+    const val ROLE_PADDING = "padding"
 }

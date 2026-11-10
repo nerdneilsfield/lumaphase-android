@@ -14,7 +14,7 @@ class LayoutJsonTest {
     @Test
     fun rootKeysAndSchemaVersion() {
         assertEquals(listOf("schema_version", "layouts"), LayoutJson.ROOT_KEYS)
-        assertEquals("1.0", LayoutJson.SCHEMA_VERSION)
+        assertEquals("1.1", LayoutJson.SCHEMA_VERSION)
     }
 
     @Test
@@ -23,6 +23,13 @@ class LayoutJsonTest {
             listOf(
                 "layout_id",
                 "layout_profile",
+                "geometry_profile",
+                "grid_rows",
+                "grid_cols",
+                "module_count",
+                "padding_count",
+                "module_order",
+                "sampling_inner_fraction",
                 "drawable_width_px",
                 "drawable_height_px",
                 "coordinate_system",
@@ -32,6 +39,7 @@ class LayoutJsonTest {
                 "pattern_to_drawable",
                 "dynamic_rect_px",
                 "modules",
+                "padding",
                 "markers",
                 "level_low",
                 "level_high",
@@ -41,8 +49,12 @@ class LayoutJsonTest {
     }
 
     @Test
-    fun moduleAndMarkerKeysMatchTheContract() {
+    fun modulePaddingAndMarkerKeysMatchTheContract() {
         assertEquals(listOf("index", "rect_px"), LayoutJson.MODULE_KEYS)
+        assertEquals(
+            listOf("slot_index", "role", "rect_px", "level"),
+            LayoutJson.PADDING_KEYS,
+        )
         assertEquals(
             listOf(
                 "id",
@@ -58,9 +70,22 @@ class LayoutJsonTest {
     }
 
     @Test
-    fun keyConstantsAreDistinct() {
-        val all = LayoutJson.ROOT_KEYS + LayoutJson.LAYOUT_KEYS +
-            LayoutJson.MODULE_KEYS + LayoutJson.MARKER_KEYS
-        assertTrue("duplicate key names", all.size == all.toSet().size)
+    fun keyConstantsAreDistinctWithinEachObject() {
+        // rect_px appears in both a module and a padding object, which is intentional; keys
+        // must be unique inside one object.
+        val rootAndLayout = LayoutJson.ROOT_KEYS + LayoutJson.LAYOUT_KEYS
+        assertTrue("duplicate root/layout key names", rootAndLayout.size == rootAndLayout.toSet().size)
+        assertTrue(
+            "duplicate module key names",
+            LayoutJson.MODULE_KEYS.size == LayoutJson.MODULE_KEYS.toSet().size,
+        )
+        assertTrue(
+            "duplicate padding key names",
+            LayoutJson.PADDING_KEYS.size == LayoutJson.PADDING_KEYS.toSet().size,
+        )
+        assertTrue(
+            "duplicate marker key names",
+            LayoutJson.MARKER_KEYS.size == LayoutJson.MARKER_KEYS.toSet().size,
+        )
     }
 }
