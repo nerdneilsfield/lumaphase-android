@@ -1,5 +1,15 @@
 # Android 显示端实施计划
 
+## 新任务：手机相机识别测试
+
+用户授权新增相机测试入口，明确自动识别四角ArUco并允许手动四角兜底，参考lumaphase-sync实际实现；原显示功能保留。目标是导入被测源的实际layout.json、选择布局、预览相机并显示定位/采样与16位payload、CRC/Runner状态。没有显示日志/实测profile时不推算完整render_seq、同步误差或TRANSITION_FIT精细时间。原图与预览的旋转/裁剪映射、导入坐标和手动参考角需一致；手机相机的滚动快门不等于工站全局快门。
+
+当前先完成不依赖新库的纯Kotlin解码切片：tab a668bba3为唯一writer，输入已归一化68/52模块，沿用core严格互补阈值0.35、最多12个软Gray位枚举、Gray/CRC/Runner候选过滤、PASS/SOFT/FAIL与truncated语义；软唯一候选不能提升为hard PASS。以原14向量、全载荷hard往返、CRC/Runner反例和soft阈值外部预期验证。tab b0f15fd7只读核对Camera2/ImageReader生命周期、帧stride/crop、预览映射和OpenCV接入，不同时改代码或构建。
+
+解码切片已核对源码并接受：新增recognition/PayloadDecoder.kt及PayloadDecoderTest.kt，直接对照冻结core protocol.py的oracle，复用现有Crc8/GrayCode。原14向量、65536×2 hard decode、CRC/Runner反例、阈值等号、soft唯一候选与truncated等9项新测试通过，原仓库XML总计100 tests、0 failures/errors/skipped。输入非有限值显式拒绝，区别于core将NaN作soft的行为已记录；后续sampler须保留缺项状态。未接相机、未assemble，新decoder不在现有显示APK内；OpenCV依赖下载确认及平台研究仍待回。
+
+拟采用系统Camera2和OpenCV4.10.0官方Android AAR做检测及几何映射。自动ArUco需求已确认；按全局新增依赖下载前确认规则，OpenCV固定本地依赖下载仍待用户明确回答（官方AAR 112288832字节，已验证URL存在，尚未下载）。平台相机接线和共享几何输入在研究回报后收敛，不预建新相机框架。
+
 目标：实现可由命令行 Gradle 构建的 Kotlin/Jetpack Compose Android 应用，生成 OPTC-1 图案并导出可追溯的显示会话。用户已授权开发、使用命令行 Android SDK，不安装 Android Studio。
 
 设计依据：[Android 设计](android-design.md)、[共享契约](optc-1-contract.md)。当前没有应用源码，现有 `docs/` 和 `.cw/` 保留。
