@@ -6,13 +6,19 @@ import dev.lumaphase.android.protocol.PatternEncoder
 /**
  * Builds the static OPTC-1 pattern geometry in final drawable/Surface output pixels.
  *
- * The pattern is designed on an unrotated logical canvas of `patternWidthPx x
- * patternHeightPx`; `patternRotationDeg` maps it onto the drawable clockwise per
- * OPTC-1 section 3.2 and the result is centred. Every exported rectangle is produced by
- * transforming its four boundary corners with that same map, so rectangles stay aligned
- * to integer pixel edges and the half-open convention is preserved.
+ * The complete logical canvas is the drawable's inverse quarter-turn size: for 0/180 it is
+ * `drawableWidthPx x drawableHeightPx`, for 90/270 it is `drawableHeightPx x drawableWidthPx`.
+ * OPTC-1 section 3.2 rotates that complete canvas onto the drawable with no extra translation;
+ * those are the public [PatternLayout.patternWidthPx], [PatternLayout.patternHeightPx] and
+ * [PatternLayout.patternToDrawable] values.
  *
- * Layout of the logical canvas:
+ * The optical design is smaller than that complete canvas: a local region of 96% of the
+ * rotated width and 68% of the rotated height is centred inside the drawable. Modules,
+ * padding, markers and the dynamic rectangle are placed in this local region and then
+ * translated/rotated into the drawable. This internal local geometry is deliberately not
+ * exported as the public pattern canvas; it only produces the unchanged actual rectangles.
+ *
+ * Layout of the local design region:
  *  - one ArUco marker block in each of the four corners, id 0 top-left, 1 top-right,
  *    2 bottom-right, 3 bottom-left, each surrounded by a one-cell white quiet zone that
  *    is flush with the canvas edge;
@@ -22,8 +28,9 @@ import dev.lumaphase.android.protocol.PatternEncoder
  *    padding slots fill the remaining positions and carry actual low/high levels.
  * The quiet zones, the marker blocks and the dynamic area never overlap.
  *
- * The canvas covers 96% of the drawable width and 68% of its height (the proportions the
- * original design suggested); the remaining margin is cleared to black.
+ * The local region covers 96% of the drawable width and 68% of its height (the proportions
+ * the original design suggested); the remaining margin is cleared to black. The public
+ * pattern canvas remains the full drawable-sized logical canvas described above.
  */
 object PatternLayoutBuilder {
     const val COORDINATE_SYSTEM = "DRAWABLE_TOP_LEFT_PIXEL_EDGES"
@@ -132,8 +139,8 @@ object PatternLayoutBuilder {
         val mapRect: (RectPx) -> RectPx = { rect ->
             mapRectToDrawable(
                 frame.patternRotationDeg,
-                frame.patternWidthPx,
-                frame.patternHeightPx,
+                frame.localPatternWidthPx,
+                frame.localPatternHeightPx,
                 frame.offsetX,
                 frame.offsetY,
                 rect,
@@ -180,7 +187,7 @@ object PatternLayoutBuilder {
                 PointPx(outer.x0, outer.y1),
             ).map { point ->
                 mapPointToDrawable(
-                    frame.patternRotationDeg, frame.patternWidthPx, frame.patternHeightPx,
+                    frame.patternRotationDeg, frame.localPatternWidthPx, frame.localPatternHeightPx,
                     frame.offsetX, frame.offsetY, point.x, point.y,
                 )
             }
@@ -207,14 +214,14 @@ object PatternLayoutBuilder {
             drawableHeightPx = frame.drawableHeightPx,
             coordinateSystem = COORDINATE_SYSTEM,
             patternRotationDeg = frame.patternRotationDeg,
-            patternWidthPx = frame.patternWidthPx,
-            patternHeightPx = frame.patternHeightPx,
+            patternWidthPx = frame.fullPatternWidthPx,
+            patternHeightPx = frame.fullPatternHeightPx,
             patternToDrawable = patternToDrawableMatrix(
                 frame.patternRotationDeg,
-                frame.patternWidthPx,
-                frame.patternHeightPx,
-                frame.offsetX,
-                frame.offsetY,
+                frame.fullPatternWidthPx,
+                frame.fullPatternHeightPx,
+                0,
+                0,
             ).toList(),
             dynamicRectPx = mapRect(frame.dynamicLogical),
             modules = logicalModules.map { ModuleRect(it.index, mapRect(it.rectPx)) },
@@ -245,8 +252,12 @@ object PatternLayoutBuilder {
         val drawableWidthPx: Int,
         val drawableHeightPx: Int,
         val patternRotationDeg: Int,
-        val patternWidthPx: Int,
-        val patternHeightPx: Int,
+        /** Complete unrotated logical canvas; this is what the public layout exposes. */
+        val fullPatternWidthPx: Int,
+        val fullPatternHeightPx: Int,
+        /** The smaller internal design region; only actual rectangles use these extents. */
+        val localPatternWidthPx: Int,
+        val localPatternHeightPx: Int,
         val offsetX: Int,
         val offsetY: Int,
         val cellSizePx: Int,
@@ -274,31 +285,45 @@ object PatternLayoutBuilder {
         val rotatedWidthPx = drawableWidthPx * WIDTH_FRACTION_NUMERATOR / WIDTH_FRACTION_DENOMINATOR
         val rotatedHeightPx = drawableHeightPx * HEIGHT_FRACTION_NUMERATOR / HEIGHT_FRACTION_DENOMINATOR
         val quarterTurn = patternRotationDeg % 180 != 0
-        val patternWidthPx = if (quarterTurn) rotatedHeightPx else rotatedWidthPx
-        val patternHeightPx = if (quarterTurn) rotatedWidthPx else rotatedHeightPx
+        val localPatternWidthPx = if (quarterTurn) rotatedHeightPx else rotatedWidthPx
+        val localPatternHeightPx = if (quarterTurn) rotatedWidthPx else rotatedHeightPx
+        // The public canvas is the complete inverse-quarter-turn drawable; the local design
+        // region above is smaller and is the only thing modules/padding/markers use.
+        val fullPatternWidthPx = if (quarterTurn) drawableHeightPx else drawableWidthPx
+        val fullPatternHeightPx = if (quarterTurn) drawableWidthPx else drawableHeightPx
 
         val cellSizePx = maxOf(
             MIN_CELL_SIZE_PX,
-            minOf(patternWidthPx, patternHeightPx) / MARKER_SHORT_SIDE_DIVISOR,
+            minOf(localPatternWidthPx, localPatternHeightPx) / MARKER_SHORT_SIDE_DIVISOR,
         )
         val markerOuterPx =
             (ArUcoDict4x4_50.MARKER_SIZE_BITS + 2 * ArUcoDict4x4_50.BORDER_BITS) * cellSizePx
         val quietZonePx = cellSizePx
         // The block reserves a quiet-zone margin on all four sides of the marker's black edge.
         val markerBlockPx = markerOuterPx + 2 * quietZonePx
-        require(2 * markerBlockPx < patternHeightPx) {
-            "pattern height $patternHeightPx px is too small for $markerBlockPx px marker blocks"
+        require(2 * markerBlockPx < localPatternHeightPx) {
+            "pattern height $localPatternHeightPx px is too small for $markerBlockPx px marker blocks"
         }
 
         val quietTopLeft = RectPx(0, 0, markerBlockPx, markerBlockPx)
-        val quietTopRight = RectPx(patternWidthPx - markerBlockPx, 0, patternWidthPx, markerBlockPx)
-        val quietBottomRight = RectPx(
-            patternWidthPx - markerBlockPx,
-            patternHeightPx - markerBlockPx,
-            patternWidthPx,
-            patternHeightPx,
+        val quietTopRight = RectPx(
+            localPatternWidthPx - markerBlockPx,
+            0,
+            localPatternWidthPx,
+            markerBlockPx,
         )
-        val quietBottomLeft = RectPx(0, patternHeightPx - markerBlockPx, markerBlockPx, patternHeightPx)
+        val quietBottomRight = RectPx(
+            localPatternWidthPx - markerBlockPx,
+            localPatternHeightPx - markerBlockPx,
+            localPatternWidthPx,
+            localPatternHeightPx,
+        )
+        val quietBottomLeft = RectPx(
+            0,
+            localPatternHeightPx - markerBlockPx,
+            markerBlockPx,
+            localPatternHeightPx,
+        )
 
         val offsetX = (drawableWidthPx - rotatedWidthPx) / 2
         val offsetY = (drawableHeightPx - rotatedHeightPx) / 2
@@ -307,8 +332,10 @@ object PatternLayoutBuilder {
             drawableWidthPx = drawableWidthPx,
             drawableHeightPx = drawableHeightPx,
             patternRotationDeg = patternRotationDeg,
-            patternWidthPx = patternWidthPx,
-            patternHeightPx = patternHeightPx,
+            fullPatternWidthPx = fullPatternWidthPx,
+            fullPatternHeightPx = fullPatternHeightPx,
+            localPatternWidthPx = localPatternWidthPx,
+            localPatternHeightPx = localPatternHeightPx,
             offsetX = offsetX,
             offsetY = offsetY,
             cellSizePx = cellSizePx,
@@ -321,16 +348,17 @@ object PatternLayoutBuilder {
             dynamicLogical = RectPx(
                 0,
                 markerBlockPx,
-                patternWidthPx,
-                patternHeightPx - markerBlockPx,
+                localPatternWidthPx,
+                localPatternHeightPx - markerBlockPx,
             ),
         )
     }
 }
 
 /**
- * Logical pattern boundary point `(x, y)` to drawable boundary point, clockwise per
- * OPTC-1 section 3.2, then offset by the centring translation.
+ * Internal local design point `(x, y)` to drawable boundary point, clockwise per the
+ * OPTC-1 rotation table, then offset by the local-region centring translation. This is not
+ * the public [patternToDrawableMatrix], which describes the complete logical canvas.
  */
 internal fun mapPointToDrawable(
     rotationDeg: Int,
@@ -372,8 +400,10 @@ internal fun mapRectToDrawable(
 }
 
 /**
- * The 3x3 logical-to-drawable matrix, row-major, with the centring translation applied.
- * It matches [mapPointToDrawable] exactly.
+ * The 3x3 logical-canvas-to-drawable matrix, row-major, for a canvas of the supplied size.
+ * For the public layout the builder passes the complete inverse-quarter-turn drawable size and
+ * zero offsets, so the matrix is a pure rotation. The same function can describe an internal
+ * local frame when offsets are supplied.
  */
 internal fun patternToDrawableMatrix(
     rotationDeg: Int,

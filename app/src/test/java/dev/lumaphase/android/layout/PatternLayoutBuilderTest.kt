@@ -25,10 +25,15 @@ class PatternLayoutBuilderTest {
 
                     assertEquals(label, profile.moduleCount, layout.modules.size)
                     for (index in 0 until profile.moduleCount) {
-                        val start = index * layout.patternWidthPx / profile.moduleCount
-                        val end = (index + 1) * layout.patternWidthPx / profile.moduleCount
+                        val start = index * logical.localWidthPx / profile.moduleCount
+                        val end = (index + 1) * logical.localWidthPx / profile.moduleCount
                         val expected = logical.map(
-                            RectPx(start, logical.blockPx, end, layout.patternHeightPx - logical.blockPx),
+                            RectPx(
+                                start,
+                                logical.blockPx,
+                                end,
+                                logical.localHeightPx - logical.blockPx,
+                            ),
                         )
                         assertEquals("$label module $index", expected, layout.modules[index].rectPx)
                         assertEquals("$label module index $index", index, layout.modules[index].index)
@@ -62,37 +67,67 @@ class PatternLayoutBuilderTest {
         assertTrue("no test case exercises a non-divisible pattern width", nonDivisible > 0)
 
         val layout = build(LayoutProfile.F68, 1080, 2400, 0)
-        assertEquals(1036, layout.patternWidthPx)
+        assertEquals(1036, LogicalView(layout).localWidthPx)
+        assertEquals(1080, layout.patternWidthPx)
         assertTrue("1036 must not be divisible by 68", 1036 % 68 != 0)
     }
 
     @Test
-    fun matrixCentresTheRotatedCanvasAndAgreesWithTheTestRotationTable() {
+    fun publicCanvasIsTheFullDrawableInverseRotationAndTheMatrixIsPureRotation() {
         for ((widthPx, heightPx) in drawableCases) {
             for (rotationDeg in PatternLayoutBuilder.ROTATIONS_DEG) {
                 val layout = build(LayoutProfile.C52, widthPx, heightPx, rotationDeg)
-                val logical = LogicalView(layout)
-                val matrix = layout.patternToDrawable
+                val quarterTurn = rotationDeg % 180 != 0
+                val expectedWidth = if (quarterTurn) heightPx else widthPx
+                val expectedHeight = if (quarterTurn) widthPx else heightPx
                 val label = "${widthPx}x$heightPx rot=$rotationDeg"
 
-                val mapped = listOf(
-                    PointPx(0, 0),
-                    PointPx(layout.patternWidthPx, 0),
-                    PointPx(layout.patternWidthPx, layout.patternHeightPx),
-                    PointPx(0, layout.patternHeightPx),
-                ).map { logical.map(it) }
-                assertEquals("$label left edge", logical.offsetX, mapped.minOf { it.x })
-                assertEquals("$label top edge", logical.offsetY, mapped.minOf { it.y })
-                assertEquals("$label right edge", logical.offsetX + logical.rotatedWidthPx, mapped.maxOf { it.x })
-                assertEquals("$label bottom edge", logical.offsetY + logical.rotatedHeightPx, mapped.maxOf { it.y })
+                assertEquals("$label full pattern width", expectedWidth, layout.patternWidthPx)
+                assertEquals("$label full pattern height", expectedHeight, layout.patternHeightPx)
+                assertEquals(
+                    "$label pure rotation matrix",
+                    patternToDrawableMatrix(rotationDeg, expectedWidth, expectedHeight, 0, 0).toList(),
+                    layout.patternToDrawable,
+                )
 
-                for (point in listOf(PointPx(0, 0), PointPx(1, 7), PointPx(13, 29))) {
-                    val fromMatrix = PointPx(
+                val matrix = layout.patternToDrawable
+                val corners = listOf(
+                    PointPx(0, 0),
+                    PointPx(expectedWidth, 0),
+                    PointPx(expectedWidth, expectedHeight),
+                    PointPx(0, expectedHeight),
+                ).map { point ->
+                    PointPx(
                         matrix[0] * point.x + matrix[1] * point.y + matrix[2],
                         matrix[3] * point.x + matrix[4] * point.y + matrix[5],
                     )
-                    assertEquals("$label matrix vs rotation table for $point", logical.map(point), fromMatrix)
                 }
+                assertEquals("$label full canvas left", 0, corners.minOf { it.x })
+                assertEquals("$label full canvas top", 0, corners.minOf { it.y })
+                assertEquals("$label full canvas right", widthPx, corners.maxOf { it.x })
+                assertEquals("$label full canvas bottom", heightPx, corners.maxOf { it.y })
+
+                // The actual design region is still the smaller 96%/68% area, centred in the
+                // drawable. Its local mapping must be unaffected by the public full canvas.
+                val logical = LogicalView(layout)
+                val localCorners = listOf(
+                    PointPx(0, 0),
+                    PointPx(logical.localWidthPx, 0),
+                    PointPx(logical.localWidthPx, logical.localHeightPx),
+                    PointPx(0, logical.localHeightPx),
+                ).map { logical.map(it) }
+                assertEquals("$label local left", logical.offsetX, localCorners.minOf { it.x })
+                assertEquals("$label local top", logical.offsetY, localCorners.minOf { it.y })
+                assertEquals(
+                    "$label local right",
+                    logical.offsetX + logical.rotatedWidthPx,
+                    localCorners.maxOf { it.x },
+                )
+                assertEquals(
+                    "$label local bottom",
+                    logical.offsetY + logical.rotatedHeightPx,
+                    localCorners.maxOf { it.y },
+                )
             }
         }
     }
@@ -108,10 +143,15 @@ class PatternLayoutBuilderTest {
         assertEquals(f68.dynamicRectPx, c52.dynamicRectPx)
         val logical = LogicalView(c52)
         c52.modules.forEachIndexed { index, module ->
-            val start = index * c52.patternWidthPx / LayoutProfile.C52.moduleCount
-            val end = (index + 1) * c52.patternWidthPx / LayoutProfile.C52.moduleCount
+            val start = index * logical.localWidthPx / LayoutProfile.C52.moduleCount
+            val end = (index + 1) * logical.localWidthPx / LayoutProfile.C52.moduleCount
             val expected = logical.map(
-                RectPx(start, logical.blockPx, end, c52.patternHeightPx - logical.blockPx),
+                RectPx(
+                    start,
+                    logical.blockPx,
+                    end,
+                    logical.localHeightPx - logical.blockPx,
+                ),
             )
             assertEquals(expected, module.rectPx)
         }
@@ -282,9 +322,10 @@ class PatternLayoutBuilderTest {
         assertEquals(1080, layout.drawableWidthPx)
         assertEquals(2400, layout.drawableHeightPx)
         assertEquals(90, layout.patternRotationDeg)
-        // The 96%/68% canvas fills the drawable; a quarter turn swaps its extents.
-        assertEquals(1632, layout.patternWidthPx)
-        assertEquals(1036, layout.patternHeightPx)
+        // The public canvas is the complete inverse-quarter-turn drawable, not the internal
+        // 96%/68% design region; a quarter turn swaps the drawable's extents.
+        assertEquals(2400, layout.patternWidthPx)
+        assertEquals(1080, layout.patternHeightPx)
     }
 
     @Test
@@ -293,9 +334,9 @@ class PatternLayoutBuilderTest {
         // constants (96%/68% canvas, cell = shorter side / 48, quiet zone = one cell).
         val layout = build(LayoutProfile.F68, 1080, 2400, 0)
 
-        assertEquals(1036, layout.patternWidthPx)
-        assertEquals(1632, layout.patternHeightPx)
-        assertEquals(listOf(1, 0, 22, 0, 1, 384, 0, 0, 1), layout.patternToDrawable)
+        assertEquals(1080, layout.patternWidthPx)
+        assertEquals(2400, layout.patternHeightPx)
+        assertEquals(listOf(1, 0, 0, 0, 1, 0, 0, 0, 1), layout.patternToDrawable)
 
         val cell = 21
         assertEquals(cell, layout.markers.first().cellSizePx)
@@ -539,8 +580,9 @@ class PatternLayoutBuilderTest {
     private fun logicalMarkerOuter(layout: PatternLayout, id: Int): RectPx {
         val cell = layout.markers.first().cellSizePx
         val outer = cell * 6
-        val width = layout.patternWidthPx
-        val height = layout.patternHeightPx
+        val logical = LogicalView(layout)
+        val width = logical.localWidthPx
+        val height = logical.localHeightPx
         return when (id) {
             0 -> RectPx(cell, cell, cell + outer, cell + outer)
             1 -> RectPx(width - cell - outer, cell, width - cell, cell + outer)
@@ -564,6 +606,9 @@ class PatternLayoutBuilderTest {
         val cellSizePx: Int = layout.markers.first().cellSizePx
         val blockPx: Int = (ArUcoDict4x4_50.MARKER_SIZE_BITS + 2 * ArUcoDict4x4_50.BORDER_BITS) * cellSizePx +
             2 * cellSizePx
+        /** The builder's internal 96%/68% design region, not the public full canvas. */
+        val localWidthPx: Int
+        val localHeightPx: Int
         val rotatedWidthPx: Int
         val rotatedHeightPx: Int
         val offsetX: Int
@@ -571,31 +616,45 @@ class PatternLayoutBuilderTest {
 
         init {
             val quarterTurn = layout.patternRotationDeg % 180 != 0
-            rotatedWidthPx = if (quarterTurn) layout.patternHeightPx else layout.patternWidthPx
-            rotatedHeightPx = if (quarterTurn) layout.patternWidthPx else layout.patternHeightPx
+            localWidthPx = if (quarterTurn) {
+                layout.drawableHeightPx * PatternLayoutBuilder.HEIGHT_FRACTION_NUMERATOR /
+                    PatternLayoutBuilder.HEIGHT_FRACTION_DENOMINATOR
+            } else {
+                layout.drawableWidthPx * PatternLayoutBuilder.WIDTH_FRACTION_NUMERATOR /
+                    PatternLayoutBuilder.WIDTH_FRACTION_DENOMINATOR
+            }
+            localHeightPx = if (quarterTurn) {
+                layout.drawableWidthPx * PatternLayoutBuilder.WIDTH_FRACTION_NUMERATOR /
+                    PatternLayoutBuilder.WIDTH_FRACTION_DENOMINATOR
+            } else {
+                layout.drawableHeightPx * PatternLayoutBuilder.HEIGHT_FRACTION_NUMERATOR /
+                    PatternLayoutBuilder.HEIGHT_FRACTION_DENOMINATOR
+            }
+            rotatedWidthPx = if (quarterTurn) localHeightPx else localWidthPx
+            rotatedHeightPx = if (quarterTurn) localWidthPx else localHeightPx
             offsetX = (layout.drawableWidthPx - rotatedWidthPx) / 2
             offsetY = (layout.drawableHeightPx - rotatedHeightPx) / 2
         }
 
         fun map(point: PointPx): PointPx = when (layout.patternRotationDeg) {
             0 -> PointPx(point.x + offsetX, point.y + offsetY)
-            90 -> PointPx(layout.patternHeightPx - point.y + offsetX, point.x + offsetY)
+            90 -> PointPx(localHeightPx - point.y + offsetX, point.x + offsetY)
             180 -> PointPx(
-                layout.patternWidthPx - point.x + offsetX,
-                layout.patternHeightPx - point.y + offsetY,
+                localWidthPx - point.x + offsetX,
+                localHeightPx - point.y + offsetY,
             )
-            270 -> PointPx(point.y + offsetX, layout.patternWidthPx - point.x + offsetY)
+            270 -> PointPx(point.y + offsetX, localWidthPx - point.x + offsetY)
             else -> throw IllegalArgumentException("unexpected rotation ${layout.patternRotationDeg}")
         }
 
         fun unmap(point: PointPx): PointPx = when (layout.patternRotationDeg) {
             0 -> PointPx(point.x - offsetX, point.y - offsetY)
-            90 -> PointPx(point.y - offsetY, layout.patternHeightPx + offsetX - point.x)
+            90 -> PointPx(point.y - offsetY, localHeightPx + offsetX - point.x)
             180 -> PointPx(
-                layout.patternWidthPx + offsetX - point.x,
-                layout.patternHeightPx + offsetY - point.y,
+                localWidthPx + offsetX - point.x,
+                localHeightPx + offsetY - point.y,
             )
-            270 -> PointPx(layout.patternWidthPx + offsetY - point.y, point.x - offsetX)
+            270 -> PointPx(localWidthPx + offsetY - point.y, point.x - offsetX)
             else -> throw IllegalArgumentException("unexpected rotation ${layout.patternRotationDeg}")
         }
 

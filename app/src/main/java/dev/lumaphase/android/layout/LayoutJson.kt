@@ -13,9 +13,11 @@ import java.io.Writer
  *
  * Key names and types follow OPTC-1 sections 3.1, 3.3 and 4. Coordinates are final drawable
  * output pixels with the top-left origin and half-open rectangles. `pattern_to_drawable`
- * is the 3x3 row-major matrix written as three arrays of three. Every layout, including the
- * single-row F68/C52, carries the complete geometry extension group; padding is a separate
- * array and never mixed into `modules`.
+ * is the 3x3 row-major matrix written as three arrays of three. `pattern_width_px` and
+ * `pattern_height_px` describe the complete inverse-quarter-turn logical canvas, and the
+ * matrix is its pure rotation; the smaller internal design region is not exported as the
+ * pattern canvas. Every layout, including the single-row F68/C52, carries the complete
+ * geometry extension group; padding is a separate array and never mixed into `modules`.
  */
 object LayoutJson {
     const val SCHEMA_VERSION = "1.1"

@@ -1,6 +1,6 @@
 # LumaPhase Android
 
-LumaPhase 的 Android 光学时间码显示端，在手机上显示 `OPTC-1` 图案并记录会话日志，供外部相机拍摄和时间关联。应用使用 Kotlin、Jetpack Compose 和 OpenGL ES；相机采集、图像解码和多设备时钟拟合由外部程序及 Python core 处理。
+LumaPhase 的 Android 光学时间码显示端，在手机上显示 `OPTC-1` 图案并记录会话日志，供外部相机拍摄和时间关联。应用使用 Kotlin、Jetpack Compose 和 OpenGL ES，另提供手机相机采集测试入口；完整光学识别和多设备时钟拟合由 Python core 处理。
 
 当前可构建 debug APK，支持新网格和原单排布局。应用由 DengQi 开发，处于设备验证阶段：编码、几何、会话逻辑和 APK 构建已验证，真实屏幕显示、相机识别和文件导出仍需真机验证。
 
@@ -81,7 +81,15 @@ adb shell am start -n dev.lumaphase.android/.MainActivity
 | `display_profile.json` | 标定集合及分段绑定；未提供标定时集合为空、绑定为 `MISSING`。 |
 | `session_summary.json` | 各段帧计数、未确认原因和数据完整性。 |
 
-当前新会话使用 schema `1.1`，光学协议仍是 `OPTC-1`。布局名称由 `geometry_profile` 表示，`layout_profile` 仍为 `F68` 或 `C52`，`layout_id` 标识不可变几何对象。导出矩形采用左上原点、整数像素半开边界，已经包含图案旋转；读取端按矩形采样，不再次旋转。完整字段见[共享数据契约](docs/cw/optc-1-contract.md)。Android 当前没有布局文件导入入口；旧文件的 1.0/1.1 兼容读取由下游消费者实现。
+当前新会话使用 schema `1.1`，光学协议仍是 `OPTC-1`。布局名称由 `geometry_profile` 表示，`layout_profile` 仍为 `F68` 或 `C52`，`layout_id` 标识不可变几何对象。导出矩形采用左上原点、整数像素半开边界，已经包含图案旋转；读取端按矩形采样，不再次旋转。完整字段见[共享数据契约](docs/cw/optc-1-contract.md)。
+
+## 手机相机采集测试
+
+配置页选择 **Open the camera capture test**，授予相机权限后使用后置相机预览。选择 **Capture one frame** 显示冻结灰度图，选择 **Resume preview** 返回预览；离开页面或切后台会释放相机。没有后置相机的设备仍可安装和使用显示功能。
+
+选择 **Import layout.json** 导入被测显示设备的实际布局文件；文件有多个布局时，通过 `layout_id` 选项明确选择。本页支持符合契约的 schema 1.0 单排和 schema 1.1 单排、网格，拒绝损坏或不完整的布局。早期 Android 版本把内部图案区域误记为完整画布，其文件会被拒绝；请用本版本重新导出。
+
+本页目前只提供预览、冻结帧和布局导入，尚未接入自动 ArUco、手动四角定位或图像解码结果。纯 Kotlin payload 解码器已有单元测试，但还未连接相机页；不能用本页判断 CRC、同步误差或光学时间精度。相机页尚未在真实设备上运行验证。
 
 ## 时间戳与验证范围
 
@@ -89,7 +97,7 @@ adb shell am start -n dev.lumaphase.android/.MainActivity
 
 EGL 原生时间值目前按 `CLOCK_DOMAIN_UNVERIFIED` 保存，标准实际时间字段保持为空；原生值保留在平台时间戳条目中。缺少实测屏幕扫描与亮暗响应标定时，这些记录不能直接给出精细光学曝光时间。
 
-当前已验证 91 项 JVM 测试及四 ABI 原生库的 APK 构建，包含共同 24 组布局案例、14 组协议向量、65,536 个载荷的网格重排、旧单排回归和会话逻辑。尚未在 Android 设备上验证实际 GL 像素、EGL 属性与时间戳支持、120 Hz 请求效果、生命周期回调顺序、生产 `JsonWriter` 输出、SAF 导出，以及真实相机的远距识别率和时序精度。
+当前 JVM 测试结果为 121 项通过，APK 包含四 ABI 原生库。检查覆盖共同布局案例、协议向量、全载荷解码、旧单排回归、会话逻辑、布局导入和灰度帧复制/旋转。实际 Builder 的 24 个布局也已通过 Python core 的读取校验；该输入使用测试序列化器，未覆盖生产 `JsonWriter` 字节。尚未在 Android 设备上验证实际 GL 像素、EGL 属性与时间戳支持、120 Hz 请求效果、生命周期回调顺序、相机预览/取帧、SAF 导出，以及远距识别率和时序精度。
 
 ## 从源码构建
 

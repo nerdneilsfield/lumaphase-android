@@ -10,6 +10,16 @@
 
 拟采用系统Camera2和OpenCV4.10.0官方Android AAR做检测及几何映射。自动ArUco需求已确认；按全局新增依赖下载前确认规则，OpenCV固定本地依赖下载仍待用户明确回答（官方AAR 112288832字节，已验证URL存在，尚未下载）。平台相机接线和共享几何输入在研究回报后收敛，不预建新相机框架。
 
+Camera首个运行切片已派 `ctx_c4bd6f3058c6` / `task_015335a923dc`，唯一writer b0f15fd7：独立CameraTestActivity/权限与入口、后置Camera2预览、单帧Y复制与upright冻结图、真实layout.json 1.0/1.1导入和显式选择。避免新下载，允许复用已存在Gson2.13.2从test提升runtime，不自写JSON库；不加OpenCV、不放假自动检测按钮。相机/Texture生命周期和异步旧回调有明确所有权；stride/crop/buffer position、四旋转、真实JSON解析独立预期测试。a668只读准备/tmp验证输入，不写仓库或重复构建。后续再串行接自动定位/手动动态区四角、模块采样与decoder；采样归一化保持core参考模块而非研究稿全图分位数，原单排按薄带分别解码，过渡行不混成虚拟稳定码。设备缺失仍是运行验证限制。
+
+2026-11-10，采集切片已 reported，未接受、未提交。协调者直接读取 XML 确认116 tests、0 failures/errors/skipped，并计算 APK 37,994,937字节、SHA-256 `6763f9a85c23f5ac6ff874c84249e0b99995258638aa907359db1f400d0a5f0a`；未运行设备。a668 当前只读审阅 `task_7d4a32f3c05b` / `ctx_21f197c76652`，报告预定 `/tmp/lumaphase-android-camera-capture-review.md`。
+
+同日发现真实导出兼容缺陷：1080×2400 Android Builder 将1036×1632内部图案区域记为pattern画布，并附加(22,384)居中平移，违反共享契约§3.2完整画布纯旋转规则，被core正确拒绝。协调者已核对契约和Builder，决定修Android元数据、保持最终实绘矩形不变，不放宽core或修改共享格式。b0f 当前唯一writer任务 `task_800010b45a62` / `ctx_4b666b08788a`：区分内部区域与完整逻辑画布，并补导入器的矩阵/整数放置校验；报告预定 `/tmp/lumaphase-android-layout-canvas-fix.md`。OpenCV下载确认仍待用户答复。
+
+画布修复现已 reported、源码冻结，报告 `/tmp/lumaphase-android-layout-canvas-fix.md`。完整画布元数据与内部区域已分开，作者报告六几何×四旋转×三个非方形/奇数尺寸的实绘几何哈希不变；新Builder输出可被导入，旧违规Android导出明确拒绝，Mac重建输入可导入。CameraController改用AtomicInteger/CAS修复generation并发自增。协调者独立执行offline unit+assemble命令成功（测试任务UP-TO-DATE，未重新执行测试），直接读取XML为121 tests、0 failures/errors/skipped，APK哈希与报告一致：`a497ddeab242176d55cb84205d6377f0eaea836da7cd4ee39a60738a7f4698c6`。等待a668对冻结终版窄复核，及实际Builder临时输出交core互操作；未接受、未提交，真机与production JsonWriter字节仍未验证。
+
+core互操作已回报通过，协调者读取结果JSON确认：隔离使用已提交 `a16be68b5baaa11802e0134d14469af446c536a7` 源码，实际Android Builder结构输入 `/tmp/lumaphase-android-new-layouts.json`（95,002字节，SHA-256 `c60171ac8b274553ec40adea5d9a45273b558ac712c7a1102961b1448303640e`），validate_layout接受24布局、1440 modules、72 padding、96 markers；公开load_display_session用合成六文件容器读回24布局且逐对象相等。结果 `/var/folders/sj/34br26nn0k558dd541dvb02r0000gn/T/lumaphase-android-interop-euua6vbf/result.json`。此验证不覆盖production JsonWriter字节或设备导出；终版独立源码复核仍待回。
+
 目标：实现可由命令行 Gradle 构建的 Kotlin/Jetpack Compose Android 应用，生成 OPTC-1 图案并导出可追溯的显示会话。用户已授权开发、使用命令行 Android SDK，不安装 Android Studio。
 
 设计依据：[Android 设计](android-design.md)、[共享契约](optc-1-contract.md)。当前没有应用源码，现有 `docs/` 和 `.cw/` 保留。

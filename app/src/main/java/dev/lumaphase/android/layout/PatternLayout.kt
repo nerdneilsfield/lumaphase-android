@@ -73,6 +73,12 @@ data class MarkerLayout(
  * Immutable geometry of one OPTC-1 pattern layout. All [modules] and [markers] rectangles
  * are already expressed in final drawable output pixels, so a reader samples them
  * directly and must not apply the rotation again (OPTC-1 section 3.1).
+ *
+ * [patternWidthPx] and [patternHeightPx] describe the **complete unrotated logical canvas**:
+ * for a 0/180 layout they equal the drawable width/height, and for 90/270 they are the
+ * drawable height/width. [patternToDrawable] is the pure rotation of that complete canvas;
+ * it has no centring translation. The smaller 96%/68% design region used to lay out the
+ * visible modules and markers is internal to the builder and is not this public canvas.
  */
 data class PatternLayout(
     val layoutId: String,
@@ -82,9 +88,11 @@ data class PatternLayout(
     val drawableHeightPx: Int,
     val coordinateSystem: String,
     val patternRotationDeg: Int,
+    /** Width of the complete unrotated logical canvas, not the internal design region. */
     val patternWidthPx: Int,
+    /** Height of the complete unrotated logical canvas, not the internal design region. */
     val patternHeightPx: Int,
-    /** 3x3 logical-to-drawable matrix, row-major, integers. */
+    /** 3x3 complete-canvas-to-drawable rotation, row-major, integers; no offset. */
     val patternToDrawable: List<Int>,
     val dynamicRectPx: RectPx,
     val modules: List<ModuleRect>,
@@ -94,6 +102,27 @@ data class PatternLayout(
     val levelHigh: Int,
 ) {
     init {
+        require(patternRotationDeg in setOf(0, 90, 180, 270)) {
+            "unsupported pattern rotation $patternRotationDeg"
+        }
+        val quarterTurn = patternRotationDeg % 180 != 0
+        val expectedPatternWidth = if (quarterTurn) drawableHeightPx else drawableWidthPx
+        val expectedPatternHeight = if (quarterTurn) drawableWidthPx else drawableHeightPx
+        require(patternWidthPx == expectedPatternWidth && patternHeightPx == expectedPatternHeight) {
+            "pattern canvas ${patternWidthPx}x$patternHeightPx is not the inverse-quarter-turn " +
+                "drawable ${drawableWidthPx}x$drawableHeightPx at $patternRotationDeg deg"
+        }
+        require(
+            patternToDrawable == patternToDrawableMatrix(
+                patternRotationDeg,
+                expectedPatternWidth,
+                expectedPatternHeight,
+                0,
+                0,
+            ).toList(),
+        ) {
+            "pattern_to_drawable must be the pure rotation of the complete logical canvas"
+        }
         require(profile == geometry.layoutProfile) {
             "layout profile ${profile.name} does not match geometry ${geometry.wire}"
         }

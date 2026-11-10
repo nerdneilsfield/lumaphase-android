@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- No permission is requested: the static optical target uses no camera, microphone,
-         network or storage access. The layout export uses the system document picker. -->
+    <!-- The display target itself needs no camera. The optional recognition test uses the
+         back camera; the camera feature is not required so a display-only device can still
+         install and run the app. Layout import/export uses the system document picker. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
 
     <application
         android:label="@string/app_name"
@@ -26,6 +32,12 @@
 
         <activity
             android:name=".DynamicPreviewActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Lumaphase" />
+
+        <activity
+            android:name=".camera.CameraTestActivity"
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Lumaphase" />

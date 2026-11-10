@@ -66,7 +66,10 @@ dependencies {
     implementation("androidx.compose.ui:ui-tooling-preview")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
+    // The same Gson artifact was already a cached test dependency; it is promoted to the
+    // runtime classpath so the layout import parser can be exercised in host JVM tests
+    // instead of relying on Android's JsonReader, which cannot run here.
+    implementation("com.google.code.gson:gson:2.13.2")
+
     testImplementation("junit:junit:4.13.2")
-    // Test-only JSON reader for the authoritative OPTC-1 vector fixture.
-    testImplementation("com.google.code.gson:gson:2.13.2")
 }

@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import dev.lumaphase.android.camera.CameraTestActivity
 import dev.lumaphase.android.layout.LayoutChoice
 import dev.lumaphase.android.layout.LayoutExport
 import dev.lumaphase.android.layout.PatternLayoutBuilder
@@ -282,6 +283,20 @@ private fun SettingsScreen() {
                 "panel runs at that rate.",
             style = MaterialTheme.typography.bodySmall,
         )
+
+        Text("Camera recognition test", style = MaterialTheme.typography.labelLarge)
+        Text(
+            "Opens the back camera, imports a source layout.json and freezes one upright Y " +
+                "frame. This slice has no ArUco or manual-corner button and reports no " +
+                "decoded payload.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Button(
+            onClick = { context.startActivity(Intent(context, CameraTestActivity::class.java)) },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Open the camera capture test")
+        }
         dynamicSummary?.let { summary ->
             Text(summary, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
