@@ -39,7 +39,7 @@ APK 编译和 JVM 协议测试不能证明 Activity 已在设备运行。可用 
 
 ### T2：静态光学图案与像素布局
 
-状态：实现及构建完成，29测试通过，独立窄复审 spec/quality 均通过，整理本地提交。Task `task_0dbc317203cb` / Dispatch `ctx_d47fa75cfda8`；设备验证继续明确为未验证。
+状态：done，本地提交 `75cf683`；29测试通过，独立窄复审 spec/quality 均通过。Task `task_0dbc317203cb` / Dispatch `ctx_d47fa75cfda8`；设备验证继续明确为未验证。
 
 首次交付已核验：24 个测试零失败/错误/跳过，APK SHA-256 `03101e1c7c94cbb88889fb4c91fbe3e1bfb9b029cd4f2739fc2491a6dac6d931`。协调者初读发现实际渲染以 Surface 尺寸建布局，导出却用 maximumWindowMetrics 重建，未满足同一几何来源；已交作者修复为实际预览快照并在没有快照时不宣称导出实际布局。附带核对 MSAA 请求与注释。修复 Task `task_c6ae4cb8cd22` / Dispatch `ctx_361fde679043`；独立只读审阅 Task `task_d44e7e3831a2` / Dispatch `ctx_0b457f1c2467`，固定包 `/tmp/lumaphase-android-t2-review-snapshot.md`。修复、复查完成前不接受 T2、不进入 T3。
 
@@ -58,6 +58,14 @@ T2 窄复审已返回，四项全部 ADDRESSED，最终文件哈希及测试/APK
 
 ### T3：逐帧 VSync、EGL 和实际呈现探针
 
+状态：代码及构建已接受，真机验证未完成。Task `task_a3a141ff1264` / Dispatch `ctx_530dea345ead`，仍由同一指定会话唯一实现。T2 提交 `75cf683` 为基线。
+
+首版代码已落盘，48 项 Kotlin 测试仅在临时禁用 native 构建的副本运行，不能记为 T3 原生构建通过。NDK 约 908 MB 下载缓慢，作者按官方 repository XML 校验值直取同一固定官方包，仍待实际原仓库构建 `.so` 和 APK。当前不启动第二个下载/Gradle。下载期间派独立只读审阅 Task `task_b06d88fbdec9` / Dispatch `ctx_e3adaf693cd2`，固定包 `/tmp/lumaphase-android-t3-review-snapshot.md`；重点 VSync、帧身份、JNI 返回状态和线程退出顺序。不进入T4、不提交T3。
+
+独立审阅返回 spec/quality 均不通过，报告 `/tmp/lumaphase-android-t3-review.md`。协调者核对源码后，将六项合并给当前唯一实现者修复：跨 Surface 的 run/序号连续性、不同几何的不可变 layoutId、取 frame ID 失败时字段状态及即时错误采样、最终 stats 保留 runId、排空后再发送 Activity result、静态路径先释放 EGL 再退出线程。当前为集中修复第 1 轮；不接受首版，不启动第二个下载或构建，终版仍需真实 native 构建证据和窄复审。没有设备，运行行为继续未验证。
+
+修复轮已报告完成。协调者读取原仓库 XML，确认 49 tests、0 failures/errors/skipped；实际 APK SHA-256 为 `78b5d21f64afc9ce4507330bdfe7c976af4e97530de00bd75ad880cd66ee57db`，ZIP 内包含 arm64-v8a、armeabi-v7a、x86、x86_64 四份 `liboptc_egl_timestamps.so`。实现者报告真实 CMake/NDK 编译成功，完整证据在 `/private/var/folders/sj/34br26nn0k558dd541dvb02r0000gn/T/opencode/harness/t3-evidence.md`。已交原审阅者对六项修复及源码哈希做只读窄复审；尚未提交 T3，真机短会话仍未验证。
+
 依赖 T2。增加渲染线程与最小 JNI 桥，NDK/CMake 固定版本在此任务按已核查的 SDK 包确定。
 
 - [ ] 渲染线程持有 Looper、Choreographer 和 EGL 生命周期。复制 FrameTimeline 标量，以新动态状态分配序号，交换前取得帧 ID。
@@ -67,6 +75,8 @@ T2 窄复审已返回，四项全部 ADDRESSED，最终文件哈希及测试/APK
 - [ ] 编译实际原生目标，并在设备上运行短动态会话验证身份关联；实际扩展支持和刷新率以真机结果为准。
 
 ### T4：会话、分段、日志与导出
+
+状态：queued，T3 终版窄复审 `task_94868aff2100` / `ctx_e6da4d52aa8c` 已返回，六项全部 ADDRESSED，spec/quality 均通过。协调者读取完整报告 `/tmp/lumaphase-android-t3-rereview.md`，接受编译及源码部分；没有设备，未接受运行行为。T4 继续由原实现者串行完成；明确会话状态不能依赖单个 Activity 实例。过期 run_id 注释在触及该文件时更正；不为纯测试覆盖抽取额外接口。Surface 重建首帧的间隔统计为 null，避免把停顿算成连续 VSync 间隔。
 
 依赖 T3。增加 `session/`、`log/` 和 `export/` 所需的少量实现，UI 连接实际会话控制与系统导出。
 

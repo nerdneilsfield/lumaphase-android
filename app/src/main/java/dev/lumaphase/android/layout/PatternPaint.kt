@@ -26,9 +26,21 @@ fun paintRects(layout: PatternLayout, pattern: EncodedPattern): List<LevelRect> 
         "encoded ${pattern.profile.name} pattern has ${pattern.moduleCodes.size} modules " +
             "but the layout has ${layout.modules.size}"
     }
-    val rects = ArrayList<LevelRect>(
-        layout.modules.size + layout.markers.size * (2 + ArUcoDict4x4_50.MARKER_SIZE_BITS * ArUcoDict4x4_50.MARKER_SIZE_BITS),
-    )
+    val rects = ArrayList<LevelRect>(layout.modules.size + markerRectCount(layout))
+    rects += staticMarkerRects(layout)
+    val moduleRects = moduleRects(layout)
+    moduleRects.forEachIndexed { index, moduleRect ->
+        rects += LevelRect(moduleRect, pattern.moduleCodes[index])
+    }
+    return rects
+}
+
+/**
+ * Marker rectangles in draw order. They depend only on the layout, so a per-frame renderer
+ * can build them once and reuse them for every dynamic state.
+ */
+fun staticMarkerRects(layout: PatternLayout): List<LevelRect> {
+    val rects = ArrayList<LevelRect>(markerRectCount(layout))
     for (marker in layout.markers) {
         rects += LevelRect(marker.quietRectPx, MARKER_WHITE_LEVEL)
         rects += LevelRect(marker.outerRectPx, MARKER_BLACK_LEVEL)
@@ -37,8 +49,15 @@ fun paintRects(layout: PatternLayout, pattern: EncodedPattern): List<LevelRect> 
             rects += LevelRect(cell, level)
         }
     }
-    layout.modules.forEachIndexed { index, module ->
-        rects += LevelRect(module.rectPx, pattern.moduleCodes[index])
-    }
     return rects
 }
+
+/**
+ * Module rectangles in module-index order. Only their level changes between dynamic states,
+ * so the geometry itself is also built once per layout.
+ */
+fun moduleRects(layout: PatternLayout): List<RectPx> = layout.modules.map { it.rectPx }
+
+private fun markerRectCount(layout: PatternLayout): Int =
+    layout.markers.size *
+        (2 + ArUcoDict4x4_50.MARKER_SIZE_BITS * ArUcoDict4x4_50.MARKER_SIZE_BITS)

@@ -4,6 +4,7 @@ import android.opengl.EGL14
 import android.opengl.EGLConfig
 import android.opengl.EGLContext
 import android.opengl.EGLDisplay
+import android.opengl.EGLExt
 import android.opengl.EGLSurface
 import android.util.Log
 import android.view.Surface
@@ -138,6 +139,25 @@ class EglCore {
     }
 
     fun lastError(): Int = EGL14.eglGetError()
+
+    /** Sets a surface attribute, for example enabling `EGL_TIMESTAMPS_ANDROID`. */
+    fun setSurfaceAttrib(attribute: Int, value: Int): Boolean {
+        if (!isInitialized) return false
+        return EGL14.eglSurfaceAttrib(display, surface, attribute, value)
+    }
+
+    /** The display's raw `EGL_EXTENSIONS` string, or empty when unavailable. */
+    fun extensionString(): String =
+        EGL14.eglQueryString(display, EGL14.EGL_EXTENSIONS).orEmpty()
+
+    /**
+     * Requests a presentation time for the next swap through `EGL_ANDROID_presentation_time`
+     * (bound as `EGLExt.eglPresentationTimeANDROID`). This is a request, not a result.
+     */
+    fun requestPresentationTime(nanos: Long): Boolean {
+        if (!isInitialized) return false
+        return EGLExt.eglPresentationTimeANDROID(display, surface, nanos)
+    }
 
     /** Configuration and surface attributes in force, for logcat evidence. */
     fun describe(): String {

@@ -3,6 +3,7 @@ package dev.lumaphase.android.render
 import android.opengl.GLES20
 import android.util.Log
 import dev.lumaphase.android.layout.LevelRect
+import dev.lumaphase.android.layout.RectPx
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.nio.FloatBuffer
@@ -25,6 +26,10 @@ class RectRenderer {
     private var bufferName = 0
     private var vertices: FloatBuffer =
         ByteBuffer.allocateDirect(0).order(ByteOrder.nativeOrder()).asFloatBuffer()
+    private var viewportWidth = 1f
+    private var viewportHeight = 1f
+    private var rectsQueued = 0
+    private var ready = false
 
     fun create(): Boolean {
         val vertexShader = compileShader(GLES20.GL_VERTEX_SHADER, VERTEX_SHADER)
@@ -59,6 +64,18 @@ class RectRenderer {
     }
 
     fun draw(rects: List<LevelRect>, viewportWidthPx: Int, viewportHeightPx: Int) {
+        beginFrame(viewportWidthPx, viewportHeightPx, rects.size)
+        for (rect in rects) addRect(rect.rect, rect.level)
+        endFrame()
+    }
+
+    /**
+     * Starts one frame: sets the viewport, clears to black and reserves room for
+     * [expectedRects] rectangles so the incremental path allocates nothing per frame.
+     */
+    fun beginFrame(viewportWidthPx: Int, viewportHeightPx: Int, expectedRects: Int) {
+        ready = false
+        rectsQueued = 0
         if (program == 0 || viewportWidthPx <= 0 || viewportHeightPx <= 0) return
 
         GLES20.glViewport(0, 0, viewportWidthPx, viewportHeightPx)
@@ -66,26 +83,38 @@ class RectRenderer {
         GLES20.glDisable(GLES20.GL_DITHER)
         GLES20.glClearColor(0f, 0f, 0f, 1f)
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-        if (rects.isEmpty()) return
 
-        ensureCapacity(rects.size * VERTICES_PER_RECT)
+        viewportWidth = viewportWidthPx.toFloat()
+        viewportHeight = viewportHeightPx.toFloat()
+        ensureCapacity(maxOf(expectedRects, 1) * VERTICES_PER_RECT)
+        vertices.clear()
+        ready = true
+    }
+
+    /** Queues one solid rectangle; [level] is the 8-bit SDR code value. */
+    fun addRect(rect: RectPx, level: Int) {
+        if (!ready) return
+        val left = 2f * rect.x0 / viewportWidth - 1f
+        val right = 2f * rect.x1 / viewportWidth - 1f
+        val top = 1f - 2f * rect.y0 / viewportHeight
+        val bottom = 1f - 2f * rect.y1 / viewportHeight
+        val value = level.coerceIn(0, 255) / 255f
+        putVertex(vertices, left, top, value)
+        putVertex(vertices, right, top, value)
+        putVertex(vertices, right, bottom, value)
+        putVertex(vertices, left, top, value)
+        putVertex(vertices, right, bottom, value)
+        putVertex(vertices, left, bottom, value)
+        rectsQueued++
+    }
+
+    /** Uploads the queued rectangles and draws them. */
+    fun endFrame() {
+        if (!ready) return
+        ready = false
+        if (rectsQueued == 0) return
+
         val buffer = vertices
-        buffer.clear()
-        val width = viewportWidthPx.toFloat()
-        val height = viewportHeightPx.toFloat()
-        for (rect in rects) {
-            val left = 2f * rect.rect.x0 / width - 1f
-            val right = 2f * rect.rect.x1 / width - 1f
-            val top = 1f - 2f * rect.rect.y0 / height
-            val bottom = 1f - 2f * rect.rect.y1 / height
-            val level = rect.level.coerceIn(0, 255) / 255f
-            putVertex(buffer, left, top, level)
-            putVertex(buffer, right, top, level)
-            putVertex(buffer, right, bottom, level)
-            putVertex(buffer, left, top, level)
-            putVertex(buffer, right, bottom, level)
-            putVertex(buffer, left, bottom, level)
-        }
         buffer.flip()
 
         GLES20.glUseProgram(program)
@@ -107,7 +136,7 @@ class RectRenderer {
             STRIDE_BYTES,
             2 * BYTES_PER_FLOAT,
         )
-        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, rects.size * VERTICES_PER_RECT)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, rectsQueued * VERTICES_PER_RECT)
         GLES20.glDisableVertexAttribArray(positionHandle)
         GLES20.glDisableVertexAttribArray(colorHandle)
         GLES20.glBindBuffer(GLES20.GL_ARRAY_BUFFER, 0)

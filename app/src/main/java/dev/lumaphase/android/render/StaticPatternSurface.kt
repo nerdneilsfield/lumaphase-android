@@ -51,6 +51,7 @@ class StaticPatternSurface @JvmOverloads constructor(
 
     private var egl: EglCore? = null
     private var rectRenderer: RectRenderer? = null
+    private var shutDown = false
 
     init {
         renderThread.start()
@@ -74,20 +75,44 @@ class StaticPatternSurface @JvmOverloads constructor(
         renderHandler.post { drawCurrent() }
     }
 
+    /**
+     * Releases this Surface's GL and EGL resources on the owning render thread. A Surface
+     * rebuild is not the end of the view: the thread stays alive, and a later Surface
+     * recreates the EGL resources on the next size change.
+     */
     override fun surfaceDestroyed(holder: SurfaceHolder) {
-        val released = CountDownLatch(1)
-        renderHandler.post {
+        if (shutDown) return
+        runOnRenderThread { releaseGl() }
+    }
+
+    /**
+     * Releases GL and EGL on the owning render thread and only then stops that thread, so a
+     * later `surfaceDestroyed` cannot post to a dead Looper. Idempotent, and safe whether it
+     * runs before or after `surfaceDestroyed`. Call from the host's `onDestroy`.
+     */
+    fun shutdown() {
+        if (shutDown) return
+        shutDown = true
+        runOnRenderThread {
             releaseGl()
-            released.countDown()
-        }
-        if (!released.await(RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
-            Log.w(TAG, "render thread did not release EGL within ${RELEASE_TIMEOUT_SECONDS}s")
+            Looper.myLooper()?.quit()
         }
     }
 
-    /** Stops the render thread; call from the host's onDestroy. */
-    fun shutdown() {
-        renderThread.quitSafely()
+    /** Runs [block] on the render thread and waits for it, with a bounded wait. */
+    private fun runOnRenderThread(block: () -> Unit) {
+        val finished = CountDownLatch(1)
+        val accepted = renderHandler.post {
+            block()
+            finished.countDown()
+        }
+        if (!accepted) {
+            Log.w(TAG, "render thread is already gone")
+            return
+        }
+        if (!finished.await(RELEASE_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+            Log.w(TAG, "render thread did not finish within ${RELEASE_TIMEOUT_SECONDS}s")
+        }
     }
 
     private fun drawCurrent() {

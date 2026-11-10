@@ -45,6 +45,7 @@ import dev.lumaphase.android.layout.PreviewedLayout
 import dev.lumaphase.android.protocol.EncodedPattern
 import dev.lumaphase.android.protocol.LayoutProfile
 import dev.lumaphase.android.protocol.PatternEncoder
+import dev.lumaphase.android.render.DynamicRenderThread
 import java.io.OutputStreamWriter
 import java.util.Locale
 
@@ -78,6 +79,7 @@ private fun SettingsScreen() {
     var renderSeqText by remember { mutableStateOf("0") }
     var exportStatus by remember { mutableStateOf<String?>(null) }
     var previewedLayout by remember { mutableStateOf<PreviewedLayout?>(null) }
+    var dynamicSummary by remember { mutableStateOf<String?>(null) }
 
     val parsed = renderSeqText.trim().toULongOrNull()
     val encoded = parsed?.let { PatternEncoder.encode(it, profile) }
@@ -100,6 +102,16 @@ private fun SettingsScreen() {
             "Export cancelled."
         } else {
             writeLayoutSnapshot(context, uri, previewedLayout)
+        }
+    }
+
+    val dynamicLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        dynamicSummary = if (result.resultCode == Activity.RESULT_OK) {
+            DynamicPreviewActivity.summary(result.data)
+        } else {
+            null
         }
     }
 
@@ -187,6 +199,27 @@ private fun SettingsScreen() {
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text("Export layout.json")
+        }
+
+        Button(
+            onClick = {
+                dynamicSummary = null
+                dynamicLauncher.launch(
+                    DynamicPreviewActivity.intent(context, profile, rotationDeg),
+                )
+            },
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text("Open the dynamic pattern (VSync + EGL timestamps)")
+        }
+        Text(
+            "Requests ${DynamicRenderThread.REQUESTED_REFRESH_HZ} Hz with " +
+                "CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS. That is a request, not evidence that the " +
+                "panel runs at that rate; the run summary reports what the platform answered.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        dynamicSummary?.let { summary ->
+            Text(summary, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
         Text(
             if (snapshot == null) {

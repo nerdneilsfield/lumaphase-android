@@ -23,6 +23,12 @@
             android:exported="false"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Lumaphase" />
+
+        <activity
+            android:name=".DynamicPreviewActivity"
+            android:exported="false"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Lumaphase" />
     </application>
 
 </manifest>

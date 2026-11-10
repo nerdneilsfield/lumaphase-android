@@ -10,6 +10,10 @@ android {
     namespace = "dev.lumaphase.android"
     compileSdk = 36
 
+    // Pinned NDK: this version provides <EGL/eglext.h> with the frame timestamp tokens and
+    // builds the single C bridge. No third-party code and no download step.
+    ndkVersion = "28.2.13676358"
+
     defaultConfig {
         applicationId = "dev.lumaphase.android"
         minSdk = 33
@@ -31,6 +35,13 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 }
 
