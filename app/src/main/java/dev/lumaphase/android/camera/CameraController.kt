@@ -22,8 +22,66 @@ import dev.lumaphase.android.layout.ImportedLayout
 import dev.lumaphase.android.recognition.RecognitionPipeline
 import dev.lumaphase.android.recognition.RecognitionReading
 import java.util.concurrent.Executors
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * One pending freeze capture plus its request identity. A request is reserved before live is
+ * stopped, but is not consumable until [markReady] runs after the stop. This prevents a camera
+ * callback that races with requestFrame from publishing/queuing a frame whose request was
+ * cancelled, and makes a duplicate request fail without cancelling the first one.
+ */
+internal class FreezeCaptureState {
+    data class Request(val id: Int, val layout: ImportedLayout?)
+
+    private val lock = Any()
+    private var pending = false
+    private var ready = false
+    private var nextId = 0
+    private var active: Request? = null
+
+    fun reserve(layout: ImportedLayout?): Request? = synchronized(lock) {
+        if (pending) {
+            null
+        } else {
+            pending = true
+            ready = false
+            Request(++nextId, layout).also { active = it }
+        }
+    }
+
+    fun markReady(request: Request): Boolean = synchronized(lock) {
+        if (!pending || active !== request) {
+            false
+        } else {
+            ready = true
+            true
+        }
+    }
+
+    /** Consumes the next-frame gate only when the request is fully reserved and ready. */
+    fun take(): Request? = synchronized(lock) {
+        if (!pending || !ready) {
+            null
+        } else {
+            pending = false
+            active
+        }
+    }
+
+    /** Cancels an unfinished capture and makes every older request id non-current. */
+    fun cancel() {
+        synchronized(lock) {
+            pending = false
+            ready = false
+            active = null
+            nextId++
+        }
+    }
+
+    fun isActive(request: Request): Boolean = synchronized(lock) {
+        active === request
+    }
+}
 
 /**
  * Minimal back-camera owner for the recognition capture test.
@@ -45,14 +103,27 @@ class CameraController(private val context: Context) {
         fun onPreviewInfo(preview: CameraPreviewInfo)
         fun onFrame(frame: GrayFrame)
         fun onRecognition(reading: RecognitionReading, generation: Int)
+        fun onFrozenRecognition(
+            reading: RecognitionReading,
+            frameTimestampNanos: Long,
+            completedAtMillis: Long,
+            elapsedMillis: Long,
+        )
         fun onAnalysisError(message: String, generation: Int)
+        fun onFrozenAnalysisError(message: String)
         fun onAnalysisBusy(message: String, generation: Int)
     }
 
     var listener: Listener? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val pending = AtomicBoolean(false)
+    private data class PendingFreeze(
+        val frame: GrayFrame,
+        val request: FreezeCaptureState.Request,
+        val layout: ImportedLayout,
+    )
+
+    private val freezeCapture = FreezeCaptureState()
     private val analysisExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "lumaphase-analysis").apply { isDaemon = true }
     }
@@ -69,6 +140,8 @@ class CameraController(private val context: Context) {
     @Volatile private var live = false
     @Volatile private var liveLayout: ImportedLayout? = null
     @Volatile private var manualLayout: ImportedLayout? = null
+    @Volatile private var frozenLayout: ImportedLayout? = null
+    @Volatile private var pendingFreeze: PendingFreeze? = null
     @Volatile private var recognitionPipeline: RecognitionPipeline? = null
     @Volatile private var pipelineError: String? = null
     @Volatile private var pipelineFailed = false
@@ -111,8 +184,8 @@ class CameraController(private val context: Context) {
         live = false
         liveLayout = null
         manualLayout = null
+        cancelFrozenCapture()
         ready = false
-        pending.set(false)
         textureView = null
         val handler = cameraHandler ?: return
         handler.post { closeAll() }
@@ -128,10 +201,11 @@ class CameraController(private val context: Context) {
     }
 
     /**
-     * Requests one frame. The request is consumed by the next image available callback; if
-     * another request is already pending, the call is rejected rather than queued.
+     * Freezes the next Y frame and analyzes it through the same pipeline. The live loop is
+     * stopped immediately so its old generation cannot publish; the frame is still displayed
+     * even when the single analysis slot is busy, and the analysis waits in [pendingFreeze].
      */
-    fun requestFrame() {
+    fun requestFrame(layout: ImportedLayout?) {
         if (!ready) {
             notifyError("相机预览尚未就绪")
             return
@@ -141,12 +215,17 @@ class CameraController(private val context: Context) {
             notifyError("相机预览未连接")
             return
         }
-        if (!pending.compareAndSet(false, true)) {
+        // Reserve the frame gate first. A duplicate request must not stop the first request.
+        val request = freezeCapture.reserve(layout) ?: run {
             notifyError("已有一个取帧请求在等待")
             return
         }
+        // Now the request owns the gate; stop live and invalidate its generation without
+        // cancelling this just-reserved capture. markReady publishes it after the stop.
+        stopLiveForFreeze()
         latestDisplayRotationDeg = displayRotationDegrees(view)
         pendingDisplayRotationDeg = latestDisplayRotationDeg
+        freezeCapture.markReady(request)
     }
 
     /**
@@ -155,6 +234,8 @@ class CameraController(private val context: Context) {
      * The analysis executor constructs OpenCV on its own thread.
      */
     fun startLive(layout: ImportedLayout) {
+        // A layout/rotation switch or restore explicitly cancels an unfinished freeze capture.
+        cancelFrozenCapture()
         if (live && liveLayout?.layoutId == layout.layoutId) return
         live = true
         liveLayout = layout
@@ -163,11 +244,21 @@ class CameraController(private val context: Context) {
         pipelineError = null
     }
 
+    private fun stopLiveForFreeze() {
+        live = false
+        liveLayout = null
+        manualLayout = null
+        pendingFreeze = null
+        frozenLayout = null
+        analysisGate.nextGeneration()
+    }
+
     /** Stops continuous analysis and invalidates every in-flight/queued result. */
     fun stopLive() {
         live = false
         liveLayout = null
         manualLayout = null
+        cancelFrozenCapture()
         analysisGate.nextGeneration()
     }
 
@@ -186,6 +277,7 @@ class CameraController(private val context: Context) {
         live = false
         liveLayout = null
         manualLayout = layout
+        cancelFrozenCapture()
         analysisExecutor.execute { runAnalysis(frame, layout, gen, manual = true, targetPoints = targetPoints) }
     }
 
@@ -202,6 +294,7 @@ class CameraController(private val context: Context) {
         live = false
         liveLayout = null
         manualLayout = null
+        cancelFrozenCapture()
         start(view)
         if (layout != null) startLive(layout)
     }
@@ -412,9 +505,8 @@ class CameraController(private val context: Context) {
         val image = try {
             reader.acquireLatestImage()
         } catch (error: Throwable) {
-            if (pending.compareAndSet(true, false)) {
-                notifyError("无法获取相机帧：${error.message}")
-            }
+            cancelFrozenCapture()
+            notifyError("无法获取相机帧：${error.message}")
             return
         } ?: return
 
@@ -439,11 +531,19 @@ class CameraController(private val context: Context) {
                 }
                 return
             }
-            if (!pending.compareAndSet(true, false)) return
+            val request = freezeCapture.take() ?: return
             val rotation = pendingDisplayRotationDeg
             val frame = GrayFrameExtractor.fromImage(image, sensorOrientationDeg, rotation)
+            // Re-check after the copy: startLive/stopLive/layout switch may have cancelled it.
+            if (!freezeCapture.isActive(request)) return
             mainHandler.post {
-                if (generation.get() == generationAtFrame) listener?.onFrame(frame)
+                if (generation.get() == generationAtFrame && freezeCapture.isActive(request)) {
+                    listener?.onFrame(frame)
+                }
+            }
+            val layout = request.layout
+            if (layout != null && freezeCapture.isActive(request)) {
+                enqueueFrozenAnalysis(frame, request, layout)
             }
         } catch (error: Throwable) {
             if (live) notifyAnalysisError("无法复制相机帧：${error.message}", analysisGate.currentGeneration())
@@ -459,30 +559,46 @@ class CameraController(private val context: Context) {
         analysisId: Int,
         manual: Boolean,
         targetPoints: List<dev.lumaphase.android.camera.DoublePoint> = emptyList(),
+        frozen: Boolean = false,
     ) {
+        val startedAtNanos = System.nanoTime()
         try {
-            if (!isCurrentAnalysis(analysisId, layout, manual)) return
+            if (!isCurrentAnalysis(analysisId, layout, manual, frozen)) return
             val pipeline = getPipeline()
             if (pipeline == null) {
-                notifyAnalysisError(pipelineError ?: "OpenCV 初始化失败", analysisId)
+                notifyAnalysisFailure(pipelineError ?: "OpenCV 初始化失败", analysisId, frozen)
                 return
             }
             val reading = try {
                 if (manual) pipeline.analyzeManual(frame, layout, targetPoints)
                 else pipeline.analyze(frame, layout)
             } catch (error: Throwable) {
-                notifyAnalysisError("分析失败：${error.message ?: error.javaClass.simpleName}", analysisId)
+                notifyAnalysisFailure("分析失败：${error.message ?: error.javaClass.simpleName}", analysisId, frozen)
                 return
             }
-            if (isCurrentAnalysis(analysisId, layout, manual)) {
+            if (frozen) {
+                val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000
+                val completedAtMillis = System.currentTimeMillis()
                 mainHandler.post {
-                    if (isCurrentAnalysis(analysisId, layout, manual)) {
+                    if (isCurrentAnalysis(analysisId, layout, manual, frozen)) {
+                        listener?.onFrozenRecognition(
+                            reading,
+                            frame.timestampNanos,
+                            completedAtMillis,
+                            elapsedMs,
+                        )
+                    }
+                }
+            } else if (isCurrentAnalysis(analysisId, layout, manual, frozen)) {
+                mainHandler.post {
+                    if (isCurrentAnalysis(analysisId, layout, manual, frozen)) {
                         listener?.onRecognition(reading, analysisId)
                     }
                 }
             }
         } finally {
             analysisGate.finish(analysisId)
+            dispatchPendingFreeze()
         }
     }
 
@@ -503,10 +619,66 @@ class CameraController(private val context: Context) {
         }
     }
 
-    private fun isCurrentAnalysis(analysisId: Int, layout: ImportedLayout, manual: Boolean): Boolean {
+    private fun isCurrentAnalysis(
+        analysisId: Int,
+        layout: ImportedLayout,
+        manual: Boolean,
+        frozen: Boolean = false,
+    ): Boolean {
         if (analysisGate.currentGeneration() != analysisId) return false
-        return if (manual) !live && manualLayout?.layoutId == layout.layoutId
-        else live && liveLayout?.layoutId == layout.layoutId
+        return when {
+            frozen -> !live && frozenLayout?.layoutId == layout.layoutId
+            manual -> !live && manualLayout?.layoutId == layout.layoutId
+            else -> live && liveLayout?.layoutId == layout.layoutId
+        }
+    }
+
+    private fun enqueueFrozenAnalysis(
+        frame: GrayFrame,
+        request: FreezeCaptureState.Request,
+        layout: ImportedLayout,
+    ) {
+        if (!freezeCapture.isActive(request)) return
+        pendingFreeze = PendingFreeze(frame, request, layout)
+        dispatchPendingFreeze()
+    }
+
+    /** Cancels an unfinished freeze capture; late images/requests become non-current. */
+    private fun cancelFrozenCapture() {
+        freezeCapture.cancel()
+        pendingFreeze = null
+        frozenLayout = null
+    }
+
+    /**
+     * Starts the queued freeze on the same single analysis slot. A busy live/manual/frozen
+     * analysis keeps the queued frame; its runAnalysis finally retries this method.
+     */
+    private fun dispatchPendingFreeze() {
+        val queued = pendingFreeze ?: return
+        if (!freezeCapture.isActive(queued.request) || live) {
+            pendingFreeze = null
+            return
+        }
+        val token = analysisGate.beginNew() ?: return
+        pendingFreeze = null
+        frozenLayout = queued.layout
+        analysisExecutor.execute {
+            runAnalysis(queued.frame, queued.layout, token, manual = false, frozen = true)
+        }
+    }
+
+    private fun notifyAnalysisFailure(message: String, analysisId: Int, frozen: Boolean) {
+        if (frozen) {
+            mainHandler.post {
+                if (analysisGate.currentGeneration() == analysisId) {
+                    listener?.onFrozenAnalysisError(message)
+                }
+            }
+            Log.w(TAG, message)
+        } else {
+            notifyAnalysisError(message, analysisId)
+        }
     }
 
     private fun notifyAnalysisError(message: String, analysisId: Int) {
@@ -541,7 +713,7 @@ class CameraController(private val context: Context) {
 
     private fun closeAll() {
         ready = false
-        pending.set(false)
+        cancelFrozenCapture()
         session?.close()
         session = null
         imageReader?.setOnImageAvailableListener(null, null)

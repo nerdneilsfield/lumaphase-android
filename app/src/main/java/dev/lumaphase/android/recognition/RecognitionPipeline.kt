@@ -42,6 +42,9 @@ data class RecognitionReading(
     val markerFrameCorners: List<List<DoublePoint>>,
     val manual: Boolean = false,
     val failureReason: String? = null,
+    /** Raw ArUco ids matrix shape as reported by ScreenLocator, for diagnostics. */
+    val locatorIdsRows: Int = 0,
+    val locatorIdsCols: Int = 0,
 )
 
 /**
@@ -80,6 +83,8 @@ class RecognitionPipeline(
                 homography = null,
                 markerFrameCorners = emptyList(),
                 failureReason = located.reason,
+                locatorIdsRows = located.idsRows,
+                locatorIdsCols = located.idsCols,
             )
         }
         val screen = located as LocatedScreen
@@ -96,6 +101,8 @@ class RecognitionPipeline(
                 homography = screen.homography,
                 markerCorners = screen.match.target.chunked(4),
                 status = RecognitionStatus.NO_DECODE,
+                idsRows = screen.idsRows,
+                idsCols = screen.idsCols,
             )
         }
         return buildReading(
@@ -108,6 +115,8 @@ class RecognitionPipeline(
             homography = screen.homography,
             markerCorners = screen.match.target.chunked(4),
             manual = false,
+            idsRows = screen.idsRows,
+            idsCols = screen.idsCols,
         )
     }
 
@@ -155,6 +164,8 @@ class RecognitionPipeline(
             homography = homography,
             markerCorners = listOf(targetPoints),
             manual = true,
+            idsRows = 0,
+            idsCols = 0,
         )
     }
 
@@ -168,6 +179,8 @@ class RecognitionPipeline(
         homography: DoubleArray,
         markerCorners: List<List<DoublePoint>>,
         manual: Boolean,
+        idsRows: Int,
+        idsCols: Int,
     ): RecognitionReading {
         val bands = sample.bands.map { band ->
             if (band.levels == null) {
@@ -215,6 +228,8 @@ class RecognitionPipeline(
             markerFrameCorners = markerCorners,
             manual = manual,
             failureReason = bands.firstOrNull { it.decode == null }?.reason,
+            locatorIdsRows = idsRows,
+            locatorIdsCols = idsCols,
         )
     }
 
@@ -250,6 +265,8 @@ class RecognitionPipeline(
         rms: Double? = null,
         homography: DoubleArray? = null,
         markerCorners: List<List<DoublePoint>> = emptyList(),
+        idsRows: Int = 0,
+        idsCols: Int = 0,
     ): RecognitionReading = RecognitionReading(
         located = located,
         detectedMarkerIds = detected,
@@ -263,5 +280,7 @@ class RecognitionPipeline(
         homography = homography,
         markerFrameCorners = markerCorners,
         failureReason = reason,
+        locatorIdsRows = idsRows,
+        locatorIdsCols = idsCols,
     )
 }

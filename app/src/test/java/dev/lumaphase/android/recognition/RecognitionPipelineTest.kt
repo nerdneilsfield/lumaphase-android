@@ -83,6 +83,27 @@ class RecognitionPipelineTest {
     }
 
     @Test
+    fun locatorIdMatrixShapeAndDetectedIdsReachReading() {
+        val layout = gridLayout()
+        val reading = RecognitionPipeline(
+            FakeLocator(
+                LocateFailure(
+                    detectedMarkerIds = listOf(0, 1, 3),
+                    missingMarkerIds = listOf(2),
+                    reason = "MISSING_MARKERS",
+                    idsRows = 1,
+                    idsCols = 4,
+                ),
+            ),
+        ).analyze(filledFrame(layout, 0x1234), layout)
+        assertEquals(RecognitionStatus.NOT_LOCATED, reading.status)
+        assertEquals(listOf(0, 1, 3), reading.detectedMarkerIds)
+        assertEquals(listOf(2), reading.missingMarkerIds)
+        assertEquals(1, reading.locatorIdsRows)
+        assertEquals(4, reading.locatorIdsCols)
+    }
+
+    @Test
     fun notLocatedHasNoPayloadAndNoBands() {
         val reading = RecognitionPipeline(
             FakeLocator(

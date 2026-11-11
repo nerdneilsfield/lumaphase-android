@@ -34,6 +34,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -94,6 +95,7 @@ fun CameraTestScreen(
     var frozenBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var frozenFrame by remember { mutableStateOf<GrayFrame?>(null) }
     var frozenDescription by remember { mutableStateOf<String?>(null) }
+    var frozenDiagnostics by remember { mutableStateOf<String?>(null) }
     var reading by remember { mutableStateOf<RecognitionReading?>(null) }
     var manualMode by remember { mutableStateOf(false) }
     var manualPoints by remember { mutableStateOf<List<DoublePoint>>(emptyList()) }
@@ -113,6 +115,10 @@ fun CameraTestScreen(
     val androidLayout = remember(androidSelection) {
         androidSelection?.let { BuiltInLayouts.build(it) }
     }
+    val selected = androidLayout ?: macSelection?.layout ?: layouts.getOrNull(selectedIndex)
+    // The controller listener is created once by DisposableEffect; read the latest selection
+    // through state instead of capturing the initial local value.
+    val currentSelected = rememberUpdatedState(selected)
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -156,6 +162,7 @@ fun CameraTestScreen(
                     frozenBitmap = null
                     frozenFrame = null
                     frozenDescription = null
+                    frozenDiagnostics = null
                     manualMode = false
                     manualPoints = emptyList()
                     importStatus = if (imported.size == 1) {
@@ -284,16 +291,18 @@ fun CameraTestScreen(
                 frozenFrame = frame
                 frozenBitmap = frame.toDisplayBitmap()
                 frozenDescription = frame.description
+                frozenDiagnostics = null
                 reading = null
                 manualMode = false
                 manualPoints = emptyList()
                 errorMessage = null
-                status = "已冻结一帧；可点手动四角或恢复预览"
+                status = "已冻结一帧；同一 pipeline 分析中…"
             }
 
             override fun onRecognition(readingValue: RecognitionReading, generation: Int) {
                 reading = readingValue
-                val profile = layouts.getOrNull(selectedIndex)?.profile
+                frozenDiagnostics = null
+                val profile = currentSelected.value?.profile
                 val visual = profile?.let { RecognitionVisualState.of(readingValue, it) }
                 status = when (visual) {
                     RecognitionVisual.PASS -> "已定位 · CRC PASS"
@@ -303,6 +312,40 @@ fun CameraTestScreen(
                 } + if (readingValue.manual) "（手动四角）" else ""
                 cameraRetryAvailable = false
                 errorMessage = null
+            }
+
+            override fun onFrozenRecognition(
+                readingValue: RecognitionReading,
+                frameTimestampNanos: Long,
+                completedAtMillis: Long,
+                elapsedMillis: Long,
+            ) {
+                reading = readingValue
+                val visual = currentSelected.value?.let { RecognitionVisualState.of(readingValue, it.profile) }
+                status = when (visual) {
+                    RecognitionVisual.PASS -> "冻结帧 · 已定位 · CRC PASS"
+                    RecognitionVisual.FAILED -> "冻结帧 · 已定位 · CRC FAIL"
+                    RecognitionVisual.LOCATED_WARNING -> "冻结帧 · 已定位 · 未通过"
+                    RecognitionVisual.NOT_LOCATED, null -> "冻结帧 · 未定位"
+                }
+                frozenDiagnostics = buildString {
+                    append("本帧 detected=${readingValue.detectedMarkerIds}")
+                    append(" · 缺=${readingValue.missingMarkerIds}")
+                    append(" · ids=${readingValue.locatorIdsRows}×${readingValue.locatorIdsCols}")
+                    append(" · frameTs=$frameTimestampNanos")
+                    append(" · 分析 ${elapsedMillis}ms")
+                    append(" · 完成 $completedAtMillis")
+                    append(" · status=${readingValue.status}")
+                }
+                cameraRetryAvailable = false
+                errorMessage = null
+            }
+
+            override fun onFrozenAnalysisError(message: String) {
+                reading = null
+                frozenDiagnostics = "冻结帧分析失败：$message"
+                status = "冻结帧分析失败"
+                errorMessage = message
             }
 
             override fun onAnalysisError(message: String, generation: Int) {
@@ -332,7 +375,6 @@ fun CameraTestScreen(
         }
     }
 
-    val selected = androidLayout ?: macSelection?.layout ?: layouts.getOrNull(selectedIndex)
     val builtInRotation = androidSelection?.rotationDeg ?: macSelection?.rotationDeg ?: 0
     LaunchedEffect(
         resumed,
@@ -347,10 +389,12 @@ fun CameraTestScreen(
         val view = textureView
         if (resumed && permissionGranted && surfaceAvailable && view != null) {
             controller.start(view)
-            if (selected != null && !manualMode && frozenBitmap == null) {
-                controller.startLive(selected)
-            } else {
-                controller.stopLive()
+            when {
+                selected != null && !manualMode && frozenBitmap == null -> controller.startLive(selected)
+                selected == null -> controller.stopLive()
+                // A frozen frame or manual analysis already stopped live in requestFrame.
+                // Calling stopLive again here would clear the queued same-frame analysis.
+                else -> Unit
             }
         } else {
             controller.stopLive()
@@ -365,6 +409,7 @@ fun CameraTestScreen(
         frozenBitmap = null
         frozenFrame = null
         frozenDescription = null
+        frozenDiagnostics = null
     }
 
     LaunchedEffect(selectedIndex, layouts, sourceText) {
@@ -525,8 +570,10 @@ fun CameraTestScreen(
             Button(
                 enabled = permissionGranted && resumed && !importing,
                 onClick = {
-                    controller.stopLive()
-                    controller.requestFrame()
+                    reading = null
+                    frozenDiagnostics = null
+                    status = "冻结中…"
+                    controller.requestFrame(selected)
                 },
             ) {
                 Text("拍摄一帧")
@@ -548,6 +595,7 @@ fun CameraTestScreen(
                     frozenFrame = null
                     frozenBitmap = null
                     frozenDescription = null
+                    frozenDiagnostics = null
                     manualMode = false
                     manualPoints = emptyList()
                     reading = null
@@ -564,6 +612,9 @@ fun CameraTestScreen(
             )
         }
         frozenDescription?.let {
+            Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        }
+        frozenDiagnostics?.let {
             Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
         errorMessage?.let {
@@ -608,7 +659,7 @@ fun CameraTestScreen(
         }
 
         Text(
-            "Mac 参考预设（参考源 $MacReferenceLayouts.SOURCE_REFERENCE，非本机配置）",
+            "Mac 参考预设（参考源 ${MacReferenceLayouts.SOURCE_REFERENCE}，非本机配置）",
             style = MaterialTheme.typography.bodySmall,
         )
         Row(
@@ -637,6 +688,7 @@ fun CameraTestScreen(
                             frozenBitmap = null
                             frozenFrame = null
                             frozenDescription = null
+                            frozenDiagnostics = null
                             status = "已选 Mac 参考预设，等待识别…"
                         }
                     },
@@ -675,6 +727,7 @@ fun CameraTestScreen(
                             frozenBitmap = null
                             frozenFrame = null
                             frozenDescription = null
+                            frozenDiagnostics = null
                         },
                         label = { Text("$rotation°") },
                     )
@@ -724,6 +777,7 @@ fun CameraTestScreen(
                             frozenBitmap = null
                             frozenFrame = null
                             frozenDescription = null
+                            frozenDiagnostics = null
                         },
                         label = { Text(layout.layoutId) },
                     )

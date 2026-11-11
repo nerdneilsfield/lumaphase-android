@@ -44,6 +44,7 @@ object GrayFrameExtractor {
             sensorOrientationDeg = sensorOrientationDeg,
             displayRotationDeg = displayRotationDeg,
             cropPx = RectPx(crop.left, crop.top, crop.right, crop.bottom),
+            timestampNanos = image.timestamp.takeIf { it >= 0L } ?: 0L,
         )
     }
 }

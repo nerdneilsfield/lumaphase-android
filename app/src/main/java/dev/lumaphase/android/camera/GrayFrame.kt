@@ -21,6 +21,8 @@ class GrayFrame(
     val sensorOrientationDeg: Int,
     val displayRotationDeg: Int,
     val cropPx: RectPx,
+    /** Sensor timestamp from Image.getTimestamp(), or 0 when the device does not report one. */
+    val timestampNanos: Long = 0L,
 ) {
     init {
         require(width > 0 && height > 0) { "frame size must be positive" }
@@ -34,5 +36,6 @@ class GrayFrame(
     val description: String
         get() = "frame ${width}x$height raw=${rawWidth}x$rawHeight " +
             "sensor=$sensorOrientationDeg display=$displayRotationDeg " +
-            "rotation=$rotationDeg crop=${cropPx.edges.joinToString(",")}"
+            "rotation=$rotationDeg crop=${cropPx.edges.joinToString(",")} " +
+            "timestamp=$timestampNanos"
 }

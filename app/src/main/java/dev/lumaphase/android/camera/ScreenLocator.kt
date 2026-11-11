@@ -30,13 +30,30 @@ data class LocatedScreen(
     val missingMarkerIds: List<Int>,
     val match: CornerMatch,
     val reprojectionRmsPx: Double?,
+    val idsRows: Int = 0,
+    val idsCols: Int = 0,
 ) : LocateResult
 
 data class LocateFailure(
     val detectedMarkerIds: List<Int>,
     val missingMarkerIds: List<Int>,
     val reason: String,
+    val idsRows: Int = 0,
+    val idsCols: Int = 0,
 ) : LocateResult
+
+/**
+ * Flattens the detector's id matrix in its own row-major storage order. Both legal shapes
+ * Nx1 and 1xN (and the 1-D Mat that Java exposes as one of those) are consumed by total
+ * element count, never by rows alone. The id at flat index k belongs to corners[k].
+ */
+internal fun markerIdsInFlatOrder(rows: Int, cols: Int, values: IntArray): IntArray {
+    require(rows >= 0 && cols >= 0) { "id matrix shape must be non-negative" }
+    require(rows == 0 || cols == 0 || rows * cols == values.size) {
+        "id matrix ${rows}x${cols} does not match ${values.size} values"
+    }
+    return values
+}
 
 sealed interface LocateResult
 
@@ -133,16 +150,37 @@ class ScreenLocator : FrameLocator {
             gray.put(0, 0, frame.pixels)
             detector.detectMarkers(gray, corners, ids)
             val detected = HashMap<Int, DoubleArray>()
-            if (!ids.empty()) {
-                for (index in 0 until ids.rows()) {
-                    val id = ids.get(index, 0)?.getOrNull(0)?.toInt() ?: continue
-                    if (id !in 0..3) continue
-                    val cornerMat = corners.getOrNull(index) ?: continue
-                    if (cornerMat.total() * cornerMat.channels() != 8L) continue
-                    val floats = FloatArray(8)
-                    cornerMat.get(0, 0, floats)
-                    detected[id] = DoubleArray(8) { floats[it].toDouble() }
+            val idsRows = ids.rows()
+            val idsCols = ids.cols()
+            val idCount = ids.total().toInt()
+            val idValues = IntArray(idCount)
+            if (idCount > 0) {
+                // CV_32SC1; Java Mat.get(row, col, int[]) fills the requested data.length
+                // starting at (0,0), independent of Nx1 vs 1xN. Its int return is native status,
+                // not an element count, so consume the filled array instead.
+                if (ids.type() != CvType.CV_32SC1) {
+                    return LocateFailure(
+                        emptyList(),
+                        markers.map { it.id },
+                        "IDS_MAT_TYPE_${ids.type()}",
+                        idsRows,
+                        idsCols,
+                    )
                 }
+                // Mat.get returns 0/native status, not an element count; the bytecode above
+                // proves it fills the requested data.length. Consume the filled array as-is.
+                ids.get(0, 0, idValues)
+                check(markerIdsInFlatOrder(idsRows, idsCols, idValues).size == idCount)
+            }
+            // Same flat index k in the id array and the corners vector; never index by rows.
+            for (index in 0 until idCount) {
+                val id = idValues[index]
+                if (id !in 0..3) continue
+                val cornerMat = corners.getOrNull(index) ?: continue
+                if (cornerMat.total() * cornerMat.channels() != 8L) continue
+                val floats = FloatArray(8)
+                cornerMat.get(0, 0, floats)
+                detected[id] = DoubleArray(8) { floats[it].toDouble() }
             }
             val detectedIds = detected.keys.sorted()
             val match = LocatorMath.matchCorners(markers, detected)
@@ -155,6 +193,8 @@ class ScreenLocator : FrameLocator {
                     } else {
                         "MISSING_MARKERS"
                     },
+                    idsRows = idsRows,
+                    idsCols = idsCols,
                 )
             }
 
@@ -165,15 +205,17 @@ class ScreenLocator : FrameLocator {
                     detectedIds,
                     emptyList(),
                     "HOMOGRAPHY_FAILED",
+                    idsRows,
+                    idsCols,
                 )
                 try {
                     if (hMat.empty()) {
-                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_EMPTY")
+                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_EMPTY", idsRows, idsCols)
                     }
                     val h = DoubleArray(9)
                     hMat.get(0, 0, h)
                     if (h.any { !it.isFinite() }) {
-                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_NOT_FINITE")
+                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_NOT_FINITE", idsRows, idsCols)
                     }
                     return LocatedScreen(
                         homography = h,
@@ -181,6 +223,8 @@ class ScreenLocator : FrameLocator {
                         missingMarkerIds = emptyList(),
                         match = match,
                         reprojectionRmsPx = LocatorMath.reprojectionRms(h, match.source, match.target),
+                        idsRows = idsRows,
+                        idsCols = idsCols,
                     )
                 } finally {
                     hMat.release()

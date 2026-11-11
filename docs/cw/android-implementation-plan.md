@@ -2,6 +2,8 @@
 
 ## 新任务：手机相机识别测试
 
+用户现场截图只报告ID3，协调者用实际Python OpenCV5.0对原图检出0/1/2/3，Mac离屏四旋转逐像素核对亦通过；现场Android根因尚未确证。新增修复按ids.total读取完整CV_32SC1数组并与corners同扁平索引，兼容Nx1/1xN；不得把形状假设当作现场已复现原因。拍摄一帧现冻结实际GrayFrame并自动同帧分析，显示IDs/shape/时间戳/尺寸/耗时，Mac插值文案已修。冻结请求使用生产FreezeCaptureState，重复请求不取消首请求、切来源取消旧capture，独立复核 `/tmp/lumaphase-marker-input-final-review.md` 确认两处P2闭合。协调者另把方向赋值置于markReady前，避免发布未初始化方向。作者169项测试零失败；协调者offline构建exit0（原测试任务命中缓存），真机JNI/实际ids形状/原现场识别仍未验证。README同步诊断操作，按整文件提交。
+
 内置参考布局增量已完成并通过独立窄复核：Android六个预设由实际Builder生成，Mac四个选项读取实际Mac Builder生成的16布局资产（SHA-256 `b950f1b13ad2b8cb8ef53089eb184cfda87948083087aa2044d63c607af21baf`）。首次默认Android竖屏F68网格，内置/导入分别记忆；所有旋转有唯一layoutId，换旋转走原startLive失效旧generation。报告 `/tmp/lumaphase-camera-builtins-evidence.md`、`/tmp/lumaphase-camera-builtins-final-review.md`。作者运行161 tests零失败/错误/跳过；提交范围纳入这些新增测试，避免把未提交测试计数当作源码验证。新版APK SHA-256 `b5b9f024c3bf44235cb059fb82e1feb051198b5dd6de49916087a10dfe17a2d2`。真机预设切换、Compose恢复、相机定位和JNI运行仍未验证；参考尺寸不代表被测设备的实际配置。
 
 2026-11-11，连续识别最终窄复核四项通过，报告 `/tmp/lumaphase-camera-preview-final-review.md`：TextureView附加矩阵采用 `M=N∘D⁻¹` 并验证与默认铺满合成，旧单排共同逻辑长轴切带覆盖90/270精确带数与方向，两组外部payload按带独立解码，手动忙提示不清旧reading。协调者已读取报告、测试XML与APK，151 tests零失败/错误/跳过；APK SHA-256 `9d7ff672b3eedaa183b21524f9d59a677162b0194a1e57434a0269655cd1365a`。README由协调者在作者源码冻结后更新，属于已授权文档工作，不是作者修改冻结源码；新增入口说明亦由协调者同步为连续识别。源码与构建接受准备整文件提交，设备TextureView/OpenCV JNI/连续帧/手动触控仍未验证，不宣称现场效果通过。
