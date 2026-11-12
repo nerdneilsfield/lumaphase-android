@@ -22,6 +22,16 @@ android {
         versionName = "0.1.0"
     }
 
+    // Each device needs only its own OpenCV/JNI ABI, not all four native binaries.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+            isUniversalApk = false
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false

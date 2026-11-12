@@ -9,16 +9,16 @@ LumaPhase 的 Android 光学时间码显示端，在手机上显示 `OPTC-1` 图
 运行要求为 **Android 13（API 33）或更高版本**。当前本机构建产物位于：
 
 ```text
-app/build/outputs/apk/debug/app-debug.apk
+app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
 ```
 
-这是 debug 构建，版本为 `0.1.0`，包名为 `dev.lumaphase.android`。同一 APK 包含 `arm64-v8a`、`armeabi-v7a`、`x86` 和 `x86_64` 原生库；这些 ABI 已编译打包，尚未逐设备验证。APK 是本地构建产物，不随 Git 源码提交。
+这是 debug 构建，版本为 `0.1.0`，包名为 `dev.lumaphase.android`。现在按 CPU 架构分别生成 APK，每个安装包只带本机所需的原生库。普通 ARM64 手机使用上面的 `arm64-v8a` 包，约 63.9 MB，相比原四架构包的 223.9 MB 缩小 71.5%。同目录另有 `app-armeabi-v7a-debug.apk`、`app-x86-debug.apk` 和 `app-x86_64-debug.apk`，供对应架构设备使用；不要在 ARM 手机安装 x86 包。可通过 `adb shell getprop ro.product.cpu.abilist` 查看设备支持的架构。各架构构建已完成，尚未逐设备验证。APK 是本地构建产物，不随 Git 源码提交。
 
 将 APK 传到手机后，可通过系统文件管理器安装。也可在电脑上使用 Android SDK Platform-Tools：先启用手机的 USB 调试，连接并在手机上授权电脑，然后在仓库根目录运行：
 
 ```sh
 adb devices
-adb install -r app/build/outputs/apk/debug/app-debug.apk
+adb install -r app/build/outputs/apk/debug/app-arm64-v8a-debug.apk
 adb shell am start -n dev.lumaphase.android/.MainActivity
 ```
 
@@ -129,7 +129,7 @@ Tag 诊断分别显示四个预期 ID 的原始图像边长、最短边和最短
 
 EGL 原生时间值目前按 `CLOCK_DOMAIN_UNVERIFIED` 保存，标准实际时间字段保持为空；原生值保留在平台时间戳条目中。缺少实测屏幕扫描与亮暗响应标定时，这些记录不能直接给出精细光学曝光时间。
 
-当前 JVM 测试结果为 189 项通过，APK 包含四 ABI 原生库，约 224 MB。检查覆盖共同布局案例、协议向量、全载荷解码、旧单排回归、会话逻辑、布局导入、灰度帧复制/旋转、预览矩阵合成、逐带采样/解码、Tag 尺寸诊断、固定工站参数绑定，以及 CR-002 几何、阶段与段关联、重新确认后的剩余时长。实际 Builder 的 24 个布局也已通过 Python core 的读取校验；该输入使用测试序列化器，未覆盖生产 `JsonWriter` 字节。尚未在 Android 设备上验证实际 GL 像素、EGL 属性与时间戳支持、120 Hz 请求效果、生命周期回调顺序、新版相机比例/连续识别、OpenCV JNI、固定工站恢复、SAF 导出，以及远距识别率和时序精度。
+功能版本的 JVM 测试结果为 189 项通过；随后仅调整 ABI 分包，重新构建并核对各包架构与 ARM64 包签名，未重复运行功能测试。ARM64 APK 约 63.9 MB，其余架构各自打包。检查覆盖共同布局案例、协议向量、全载荷解码、旧单排回归、会话逻辑、布局导入、灰度帧复制/旋转、预览矩阵合成、逐带采样/解码、Tag 尺寸诊断、固定工站参数绑定，以及 CR-002 几何、阶段与段关联、重新确认后的剩余时长。实际 Builder 的 24 个布局也已通过 Python core 的读取校验；该输入使用测试序列化器，未覆盖生产 `JsonWriter` 字节。尚未在 Android 设备上验证实际 GL 像素、EGL 属性与时间戳支持、120 Hz 请求效果、生命周期回调顺序、新版相机比例/连续识别、OpenCV JNI、固定工站恢复、SAF 导出，以及远距识别率和时序精度。
 
 ## 从源码构建
 
@@ -152,7 +152,7 @@ export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
 ./gradlew :app:testDebugUnitTest :app:assembleDebug --max-workers=2
 ```
 
-构建成功后 APK 位于 `app/build/outputs/apk/debug/app-debug.apk`，测试结果位于 `app/build/test-results/testDebugUnitTest/`。仓库配置的 Gradle JVM 堆上限为 2 GiB，命令将 worker 数限制为 2。构建失败时先检查 `JAVA_HOME` 是否指向实际 JDK，以及 SDK 中是否已安装指定版本的 NDK/CMake。
+构建成功后 APK 位于 `app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`，测试结果位于 `app/build/test-results/testDebugUnitTest/`。仓库配置的 Gradle JVM 堆上限为 2 GiB，命令将 worker 数限制为 2。构建失败时先检查 `JAVA_HOME` 是否指向实际 JDK，以及 SDK 中是否已安装指定版本的 NDK/CMake。
 
 ## 文档与问题反馈
 
