@@ -139,7 +139,7 @@ EGL 原生时间值目前按 `CLOCK_DOMAIN_UNVERIFIED` 保存，标准实际时�
 
 ## 从源码构建
 
-不需要 Android Studio。当前已验证的构建环境使用 JDK 21、Android 命令行 SDK 和仓库的 Gradle Wrapper；首次构建需要访问已配置的依赖仓库。
+不需要 Android Studio。构建环境使用 JDK 21、Android 命令行 SDK 和仓库的 Gradle Wrapper；首次构建需要访问已配置的依赖仓库。OpenCV AAR 由 Git LFS 保存，克隆仓库前安装 Git LFS，克隆后运行 `git lfs pull` 取得本地依赖；之后构建不下载该 AAR。
 
 | 工具 | 项目配置 |
 | --- | --- |
