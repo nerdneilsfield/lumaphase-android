@@ -36,3 +36,5 @@ captures/
 
 # Keep the Gradle wrapper jar, which the *.jar rule above would otherwise ignore
 !gradle/wrapper/gradle-wrapper.jar
+
+.DS_Store
