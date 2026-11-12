@@ -67,11 +67,15 @@ enum class LayoutChoice(
     val wire: String,
     val layoutProfile: LayoutProfile,
     private val grid: Boolean,
+    /** Keep the same payload grid, but expand the four locating tags into the free margins. */
+    val largeTags: Boolean = false,
 ) {
     F68_SINGLE("F68-single", LayoutProfile.F68, false),
     C52_SINGLE("C52-single", LayoutProfile.C52, false),
     F68_GRID("F68-grid", LayoutProfile.F68, true),
     C52_GRID("C52-grid", LayoutProfile.C52, true),
+    F68_GRID_LARGE("F68-grid-large", LayoutProfile.F68, true, true),
+    C52_GRID_LARGE("C52-grid-large", LayoutProfile.C52, true, true),
     ;
 
     /** Human-readable selection label that names both the geometry and its payload. */
@@ -81,6 +85,8 @@ enum class LayoutChoice(
             C52_SINGLE -> "C52 · 1×52"
             F68_GRID -> "F68 grid · 9×8 / 6×12"
             C52_GRID -> "C52 grid · 9×6 / 5×12"
+            F68_GRID_LARGE -> "F68 大Tag · 9×8 / 6×12"
+            C52_GRID_LARGE -> "C52 大Tag · 9×6 / 5×12"
         }
 
     /**

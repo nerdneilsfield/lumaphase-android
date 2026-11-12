@@ -15,6 +15,8 @@ data class BuiltInLayoutPreset(
     val referenceWidthPx: Int,
     val referenceHeightPx: Int,
     val geometry: GeometryProfile,
+    /** Keep the preset's payload grid and enlarge only its four locating tags. */
+    val largeTags: Boolean = false,
 ) {
     /** Reference display size shown next to the preset; not the tested device's size. */
     val sourceReference: String get() = "${referenceWidthPx}×${referenceHeightPx}"
@@ -80,10 +82,36 @@ object BuiltInLayouts {
             1080,
             GeometryProfile.C52_G5X12,
         ),
+        preset(
+            LARGE_TAG_PRESET_ID,
+            "Android 竖屏 1080×2400 · F68-G9x8 大Tag",
+            1080,
+            2400,
+            GeometryProfile.F68_G9X8,
+            largeTags = true,
+        ),
+        preset(
+            C52_LARGE_TAG_PRESET_ID,
+            "Android 竖屏 1080×2400 · C52-G9x6 大Tag",
+            1080,
+            2400,
+            GeometryProfile.C52_G9X6,
+            largeTags = true,
+        ),
     )
 
-    /** First-launch default: Android portrait F68 grid, explicitly a preset, never auto-detected. */
-    val DEFAULT: BuiltInLayoutPreset get() = PRESETS.first()
+    /**
+     * The immutable id of the new large-tag preset. It is a separate source-reference identity;
+     * the six previous preset ids stay untouched.
+     */
+    const val LARGE_TAG_PRESET_ID = "builtin-android-portrait-f68-g9x8-large-tag"
+
+    /** The C52 counterpart; it keeps the old six ids and the F68 default untouched. */
+    const val C52_LARGE_TAG_PRESET_ID = "builtin-android-portrait-c52-g9x6-large-tag"
+
+    /** First-launch default: the new Android portrait F68 large-tag preset. */
+    val DEFAULT: BuiltInLayoutPreset get() =
+        PRESETS.first { it.id == LARGE_TAG_PRESET_ID }
 
     fun find(presetId: String?): BuiltInLayoutPreset? =
         PRESETS.firstOrNull { it.id == presetId }
@@ -106,6 +134,7 @@ object BuiltInLayouts {
             drawableWidthPx = preset.referenceWidthPx,
             drawableHeightPx = preset.referenceHeightPx,
             patternRotationDeg = selection.rotationDeg,
+            largeTags = preset.largeTags,
         )
         return layout.toImported()
     }
@@ -116,7 +145,8 @@ object BuiltInLayouts {
         widthPx: Int,
         heightPx: Int,
         geometry: GeometryProfile,
-    ): BuiltInLayoutPreset = BuiltInLayoutPreset(id, label, widthPx, heightPx, geometry)
+        largeTags: Boolean = false,
+    ): BuiltInLayoutPreset = BuiltInLayoutPreset(id, label, widthPx, heightPx, geometry, largeTags)
 
     private fun PatternLayout.toImported(): ImportedLayout = ImportedLayout(
         schemaVersion = SCHEMA_VERSION,

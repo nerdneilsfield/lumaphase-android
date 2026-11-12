@@ -63,16 +63,16 @@ object PatternLayoutBuilder {
         patternRotationDeg: Int,
         levelLow: Int = PatternEncoder.DEFAULT_LEVEL_LOW,
         levelHigh: Int = PatternEncoder.DEFAULT_LEVEL_HIGH,
-    ): PatternLayout {
-        val frame = canvasFrame(drawableWidthPx, drawableHeightPx, patternRotationDeg)
-        return buildWithGeometry(
-            layoutId,
-            choice.geometryFor(drawableWidthPx, drawableHeightPx),
-            frame,
-            levelLow,
-            levelHigh,
-        )
-    }
+    ): PatternLayout = build(
+        layoutId,
+        choice.geometryFor(drawableWidthPx, drawableHeightPx),
+        drawableWidthPx,
+        drawableHeightPx,
+        patternRotationDeg,
+        levelLow,
+        levelHigh,
+        choice.largeTags,
+    )
 
     /** Builds an explicitly named geometry; used by tests and by the choice resolver above. */
     fun build(
@@ -83,13 +83,17 @@ object PatternLayoutBuilder {
         patternRotationDeg: Int,
         levelLow: Int = PatternEncoder.DEFAULT_LEVEL_LOW,
         levelHigh: Int = PatternEncoder.DEFAULT_LEVEL_HIGH,
-    ): PatternLayout = buildWithGeometry(
-        layoutId,
-        geometry,
-        canvasFrame(drawableWidthPx, drawableHeightPx, patternRotationDeg),
-        levelLow,
-        levelHigh,
-    )
+        largeTags: Boolean = false,
+    ): PatternLayout {
+        val layout = buildWithGeometry(
+            layoutId,
+            geometry,
+            canvasFrame(drawableWidthPx, drawableHeightPx, patternRotationDeg),
+            levelLow,
+            levelHigh,
+        )
+        return if (largeTags) buildLargeTagLayout(layout) else layout
+    }
 
     /** The original single-row API, kept for the legacy F68/C52 layouts and their tests. */
     fun build(
@@ -147,63 +151,19 @@ object PatternLayoutBuilder {
             )
         }
 
+        val mapPoint: (Int, Int) -> PointPx = { x, y ->
+            mapPointToDrawable(
+                frame.patternRotationDeg, frame.localPatternWidthPx, frame.localPatternHeightPx,
+                frame.offsetX, frame.offsetY, x, y,
+            )
+        }
         val markers = listOf(
             0 to frame.quietTopLeft,
             1 to frame.quietTopRight,
             2 to frame.quietBottomRight,
             3 to frame.quietBottomLeft,
         ).map { (id, quiet) ->
-            val outer = RectPx(
-                quiet.x0 + frame.quietZonePx,
-                quiet.y0 + frame.quietZonePx,
-                quiet.x0 + frame.quietZonePx + frame.markerOuterPx,
-                quiet.y0 + frame.quietZonePx + frame.markerOuterPx,
-            )
-            val bitmap = ArUcoDict4x4_50.bitmap(id)
-            // The black edge is one BORDER_BITS cell wide on every side, so the 4x4 data
-            // cells are inset from the black outer edge by that border, not flush with it.
-            val borderPx = ArUcoDict4x4_50.BORDER_BITS * frame.cellSizePx
-            val cellRects = ArrayList<RectPx>(bitmap.size * bitmap.size)
-            val cellValues = ArrayList<Int>(bitmap.size * bitmap.size)
-            for (row in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
-                for (col in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
-                    cellRects += mapRect(
-                        RectPx(
-                            outer.x0 + borderPx + col * frame.cellSizePx,
-                            outer.y0 + borderPx + row * frame.cellSizePx,
-                            outer.x0 + borderPx + (col + 1) * frame.cellSizePx,
-                            outer.y0 + borderPx + (row + 1) * frame.cellSizePx,
-                        ),
-                    )
-                    cellValues += bitmap[row][col]
-                }
-            }
-            // The marker's own boundary vertices in its own order: top-left, top-right,
-            // bottom-right, bottom-left, then transformed with the pattern.
-            val ownCorners = listOf(
-                PointPx(outer.x0, outer.y0),
-                PointPx(outer.x1, outer.y0),
-                PointPx(outer.x1, outer.y1),
-                PointPx(outer.x0, outer.y1),
-            ).map { point ->
-                mapPointToDrawable(
-                    frame.patternRotationDeg, frame.localPatternWidthPx, frame.localPatternHeightPx,
-                    frame.offsetX, frame.offsetY, point.x, point.y,
-                )
-            }
-            MarkerLayout(
-                id = id,
-                dictionary = ArUcoDict4x4_50.DICTIONARY,
-                markerSizeBits = ArUcoDict4x4_50.MARKER_SIZE_BITS,
-                borderBits = ArUcoDict4x4_50.BORDER_BITS,
-                cellSizePx = frame.cellSizePx,
-                quietZonePx = frame.quietZonePx,
-                cornersPx = ownCorners,
-                quietRectPx = mapRect(quiet),
-                outerRectPx = mapRect(outer),
-                cellRects = cellRects,
-                cellValues = cellValues,
-            )
+            markerLayout(id, quiet, frame.cellSizePx, mapRect, mapPoint)
         }
 
         val layout = PatternLayout(
@@ -241,6 +201,182 @@ object PatternLayoutBuilder {
             }
         }
         return layout
+    }
+
+    /**
+     * One ArUco marker from its white quiet block in logical coordinates. The same routine
+     * builds the original corner tags and the large RUN tags, so the dictionary, border,
+     * 4x4 cell order and own-corner order cannot drift between the two arrangements.
+     */
+    private fun markerLayout(
+        id: Int,
+        quiet: RectPx,
+        cellSizePx: Int,
+        mapRect: (RectPx) -> RectPx,
+        mapPoint: (Int, Int) -> PointPx,
+    ): MarkerLayout {
+        val outer = RectPx(
+            quiet.x0 + cellSizePx,
+            quiet.y0 + cellSizePx,
+            quiet.x1 - cellSizePx,
+            quiet.y1 - cellSizePx,
+        )
+        val bitmap = ArUcoDict4x4_50.bitmap(id)
+        val borderPx = ArUcoDict4x4_50.BORDER_BITS * cellSizePx
+        val cellRects = ArrayList<RectPx>(bitmap.size * bitmap.size)
+        val cellValues = ArrayList<Int>(bitmap.size * bitmap.size)
+        for (row in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
+            for (col in 0 until ArUcoDict4x4_50.MARKER_SIZE_BITS) {
+                cellRects += mapRect(
+                    RectPx(
+                        outer.x0 + borderPx + col * cellSizePx,
+                        outer.y0 + borderPx + row * cellSizePx,
+                        outer.x0 + borderPx + (col + 1) * cellSizePx,
+                        outer.y0 + borderPx + (row + 1) * cellSizePx,
+                    ),
+                )
+                cellValues += bitmap[row][col]
+            }
+        }
+        val ownCorners = listOf(
+            PointPx(outer.x0, outer.y0),
+            PointPx(outer.x1, outer.y0),
+            PointPx(outer.x1, outer.y1),
+            PointPx(outer.x0, outer.y1),
+        ).map { point -> mapPoint(point.x, point.y) }
+        return MarkerLayout(
+            id = id,
+            dictionary = ArUcoDict4x4_50.DICTIONARY,
+            markerSizeBits = ArUcoDict4x4_50.MARKER_SIZE_BITS,
+            borderBits = ArUcoDict4x4_50.BORDER_BITS,
+            cellSizePx = cellSizePx,
+            quietZonePx = cellSizePx,
+            cornersPx = ownCorners,
+            quietRectPx = mapRect(quiet),
+            outerRectPx = mapRect(outer),
+            cellRects = cellRects,
+            cellValues = cellValues,
+        )
+    }
+
+    /**
+     * Replaces only the four locating tags. Dynamic rectangle, modules and padding are kept
+     * byte-for-byte identical to the chosen geometry's standard layout. The large tags use
+     * the free band between the drawable edge and the dynamic area: physically always the
+     * top/bottom bands, so a quarter-turn uses the logical left/right bands before rotation.
+     *
+     * Cell size is the smaller of the width available for two tags with a 2% side margin and
+     * the band thickness divided by the eight cells of a quiet block (6 black + 1 quiet on
+     * each side). For 1080x2400 this gives 64 px at 0/180 and 48 px at 90/270; the block
+     * still fits the actual band and never intrudes into the dynamic area.
+     */
+    private fun buildLargeTagLayout(standard: PatternLayout): PatternLayout {
+        val drawableWidthPx = standard.drawableWidthPx
+        val drawableHeightPx = standard.drawableHeightPx
+        val rotationDeg = standard.patternRotationDeg
+        val fullWidthPx = standard.patternWidthPx
+        val fullHeightPx = standard.patternHeightPx
+
+        val topBandPx = standard.dynamicRectPx.y0
+        val bottomBandPx = drawableHeightPx - standard.dynamicRectPx.y1
+        require(topBandPx > 0 && bottomBandPx > 0) {
+            "large tags need free bands above and below ${standard.dynamicRectPx}"
+        }
+        val bandPx = minOf(topBandPx, bottomBandPx)
+        val sideMarginPx = drawableWidthPx * 2 / 100
+        // Two quiet blocks (8 cells each) plus the 2% side margins.
+        val cellByWidthPx = (drawableWidthPx - 2 * sideMarginPx) / 16
+        val cellSizePx = minOf(cellByWidthPx, bandPx / 8)
+        val standardCellPx = standard.markers.first().cellSizePx
+        require(cellSizePx >= MIN_CELL_SIZE_PX && cellSizePx > standardCellPx) {
+            "large tags do not fit/enlarge in ${drawableWidthPx}x$drawableHeightPx " +
+                "rotation $rotationDeg: band=$bandPx standard_cell=$standardCellPx " +
+                "large_cell=$cellSizePx"
+        }
+        val blockPx = 8 * cellSizePx
+        val gapPx = drawableWidthPx - 2 * sideMarginPx - 2 * blockPx
+        require(gapPx >= 0) {
+            "two large tag quiet blocks do not fit across ${drawableWidthPx}px: " +
+                "block=$blockPx margins=$sideMarginPx"
+        }
+
+        val mapRect: (RectPx) -> RectPx = { rect ->
+            // The complete logical canvas maps with the public pure rotation and no offset.
+            mapRectToDrawable(rotationDeg, fullWidthPx, fullHeightPx, 0, 0, rect)
+        }
+        val mapPoint: (Int, Int) -> PointPx = { x, y ->
+            mapPointToDrawable(rotationDeg, fullWidthPx, fullHeightPx, 0, 0, x, y)
+        }
+
+        // A centred quiet block can leave only a few black pixels between the block and the
+        // image boundary. The official ArUco detector fails on that 2-3 px frame for the
+        // 2400x1080 large tags, while the same marker is detected when its quiet block is
+        // flush with the physical edge. Keep the existing centred portrait layout (20 px
+        // outer margin is already detectable) and flush only when the remaining margin is
+        // smaller than a quarter cell; the leftover band stays on the dynamic side.
+        fun flushAtOuterEdge(bandPx: Int): Boolean =
+            (bandPx - blockPx) / 2 < cellSizePx / 4
+
+        val quietRects: List<RectPx>
+        if (rotationDeg % 180 == 0) {
+            val topInset = if (flushAtOuterEdge(topBandPx)) 0 else (topBandPx - blockPx) / 2
+            val bottomY = if (flushAtOuterEdge(bottomBandPx)) {
+                drawableHeightPx - blockPx
+            } else {
+                drawableHeightPx - bottomBandPx + (bottomBandPx - blockPx) / 2
+            }
+            val leftX = sideMarginPx
+            val rightX = drawableWidthPx - sideMarginPx - blockPx
+            quietRects = listOf(
+                RectPx(leftX, topInset, leftX + blockPx, topInset + blockPx),
+                RectPx(rightX, topInset, rightX + blockPx, topInset + blockPx),
+                RectPx(rightX, bottomY, rightX + blockPx, bottomY + blockPx),
+                RectPx(leftX, bottomY, leftX + blockPx, bottomY + blockPx),
+            )
+        } else {
+            val nearY = sideMarginPx
+            val farY = fullHeightPx - sideMarginPx - blockPx
+            // Physical top/bottom correspond to logical left/right for 90/270.
+            val leftBandPx = if (rotationDeg == 90) topBandPx else bottomBandPx
+            val rightBandPx = if (rotationDeg == 90) bottomBandPx else topBandPx
+            val leftX = if (flushAtOuterEdge(leftBandPx)) {
+                0
+            } else {
+                (leftBandPx - blockPx) / 2
+            }
+            val rightX = if (flushAtOuterEdge(rightBandPx)) {
+                fullWidthPx - blockPx
+            } else {
+                fullWidthPx - rightBandPx + (rightBandPx - blockPx) / 2
+            }
+            quietRects = listOf(
+                RectPx(leftX, nearY, leftX + blockPx, nearY + blockPx),
+                RectPx(rightX, nearY, rightX + blockPx, nearY + blockPx),
+                RectPx(rightX, farY, rightX + blockPx, farY + blockPx),
+                RectPx(leftX, farY, leftX + blockPx, farY + blockPx),
+            )
+        }
+
+        val markers = quietRects.mapIndexed { id, quiet ->
+            markerLayout(id, quiet, cellSizePx, mapRect, mapPoint)
+        }
+        val drawable = RectPx(0, 0, drawableWidthPx, drawableHeightPx)
+        markers.forEach { marker ->
+            require(drawable.contains(marker.quietRectPx)) {
+                "large marker ${marker.id} quiet zone ${marker.quietRectPx} leaves $drawable"
+            }
+            require(!marker.quietRectPx.intersects(standard.dynamicRectPx)) {
+                "large marker ${marker.id} ${marker.quietRectPx} intrudes into ${standard.dynamicRectPx}"
+            }
+        }
+        for (first in markers.indices) {
+            for (second in first + 1 until markers.size) {
+                require(!markers[first].quietRectPx.intersects(markers[second].quietRectPx)) {
+                    "large markers ${markers[first].id} and ${markers[second].id} overlap"
+                }
+            }
+        }
+        return standard.copy(markers = markers)
     }
 
     /**

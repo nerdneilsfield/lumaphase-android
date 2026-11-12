@@ -7,16 +7,17 @@ import org.junit.Test
 
 class BuiltInLayoutsTest {
     @Test
-    fun catalogNamesSixExplicitSourceReferencesAndDefaultsToPortraitF68Grid() {
-        assertEquals(6, BuiltInLayouts.PRESETS.size)
+    fun catalogNamesEightExplicitSourceReferencesAndDefaultsToPortraitF68LargeTag() {
+        assertEquals(8, BuiltInLayouts.PRESETS.size)
         assertEquals(
             BuiltInLayouts.PRESETS.size,
             BuiltInLayouts.PRESETS.map { it.id }.toSet().size,
         )
-        assertEquals("builtin-android-portrait-f68-g9x8", BuiltInLayouts.DEFAULT.id)
+        assertEquals(BuiltInLayouts.LARGE_TAG_PRESET_ID, BuiltInLayouts.DEFAULT.id)
         assertEquals(1080, BuiltInLayouts.DEFAULT.referenceWidthPx)
         assertEquals(2400, BuiltInLayouts.DEFAULT.referenceHeightPx)
         assertEquals(GeometryProfile.F68_G9X8, BuiltInLayouts.DEFAULT.geometry)
+        assertTrue(BuiltInLayouts.DEFAULT.largeTags)
 
         val expected = listOf(
             "builtin-android-portrait-f68-g9x8" to GeometryProfile.F68_G9X8,
@@ -25,6 +26,8 @@ class BuiltInLayoutsTest {
             "builtin-android-portrait-c52-single" to GeometryProfile.C52,
             "builtin-android-landscape-f68-g6x12" to GeometryProfile.F68_G6X12,
             "builtin-android-landscape-c52-g5x12" to GeometryProfile.C52_G5X12,
+            BuiltInLayouts.LARGE_TAG_PRESET_ID to GeometryProfile.F68_G9X8,
+            BuiltInLayouts.C52_LARGE_TAG_PRESET_ID to GeometryProfile.C52_G9X6,
         )
         expected.forEachIndexed { index, (id, geometry) ->
             val preset = BuiltInLayouts.PRESETS[index]
@@ -36,9 +39,45 @@ class BuiltInLayoutsTest {
             assertEquals(1080, it.referenceWidthPx)
             assertEquals(2400, it.referenceHeightPx)
         }
-        BuiltInLayouts.PRESETS.drop(4).forEach {
+        BuiltInLayouts.PRESETS.subList(4, 6).forEach {
             assertEquals(2400, it.referenceWidthPx)
             assertEquals(1080, it.referenceHeightPx)
+        }
+        BuiltInLayouts.PRESETS.subList(6, 8).forEach {
+            assertEquals(1080, it.referenceWidthPx)
+            assertEquals(2400, it.referenceHeightPx)
+            assertTrue(it.largeTags)
+        }
+        assertEquals(GeometryProfile.F68_G9X8, BuiltInLayouts.PRESETS[6].geometry)
+        assertEquals(GeometryProfile.C52_G9X6, BuiltInLayouts.PRESETS[7].geometry)
+    }
+
+    @Test
+    fun c52LargeTagPresetMatchesTheC52GridLargeChoice() {
+        val preset = BuiltInLayouts.PRESETS.single {
+            it.id == BuiltInLayouts.C52_LARGE_TAG_PRESET_ID
+        }
+        assertEquals(GeometryProfile.C52_G9X6, preset.geometry)
+        assertTrue(preset.largeTags)
+        for (rotation in BuiltInLayouts.ROTATIONS_DEG) {
+            val imported = BuiltInLayouts.build(BuiltInSelection(preset, rotation))
+            val expected = PatternLayoutBuilder.build(
+                "${preset.id}-r$rotation",
+                LayoutChoice.C52_GRID_LARGE,
+                1080,
+                2400,
+                rotation,
+            )
+            val label = "C52 large preset r$rotation"
+            assertEquals(label, expected.layoutId, imported.layoutId)
+            assertEquals(label, expected.geometry, imported.geometry)
+            assertEquals(label, expected.dynamicRectPx, imported.dynamicRectPx)
+            assertEquals(label, expected.modules, imported.modules)
+            assertEquals(label, expected.padding, imported.padding)
+            assertEquals(label, expected.markers.map { it.id }, imported.markers.map { it.id })
+            assertEquals(label, expected.markers.map { it.cellSizePx }, imported.markers.map { it.cellSizePx })
+            assertEquals(label, expected.markers.map { it.quietZonePx }, imported.markers.map { it.quietZonePx })
+            assertEquals(label, expected.markers.map { it.cornersPx }, imported.markers.map { it.cornersPx })
         }
     }
 
@@ -55,6 +94,7 @@ class BuiltInLayoutsTest {
                     drawableWidthPx = preset.referenceWidthPx,
                     drawableHeightPx = preset.referenceHeightPx,
                     patternRotationDeg = rotation,
+                    largeTags = preset.largeTags,
                 )
                 val label = "${preset.id} at $rotation"
                 assertEquals(label, layoutId, imported.layoutId)

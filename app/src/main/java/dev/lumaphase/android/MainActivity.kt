@@ -80,7 +80,7 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun SettingsScreen() {
     val context = LocalContext.current
-    var layoutChoice by remember { mutableStateOf(LayoutChoice.F68_GRID) }
+    var layoutChoice by remember { mutableStateOf(LayoutChoice.F68_GRID_LARGE) }
     var rotationDeg by remember { mutableIntStateOf(0) }
     var renderSeqText by remember { mutableStateOf("0") }
     var exportStatus by remember { mutableStateOf<String?>(null) }
@@ -178,6 +178,12 @@ private fun SettingsScreen() {
                 "display is portrait or square, 6×12 (F68) or 5×12 (C52) when it is wider " +
                 "than tall. Pattern rotation does not change this choice. The single-row " +
                 "F68/C52 layouts remain available.",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Text(
+            "大Tag（利用留白）：载荷网格、dynamic_rect、modules 和 padding 每个像素保持不变，" +
+                "只把四角 Tag 放大到屏幕长边两侧的空白；1080×2400 在 0/180° 使用 64 px cell，" +
+                "90/270° 使用 48 px cell。旧 4 个选项仍可按原样使用。",
             style = MaterialTheme.typography.bodySmall,
         )
 
