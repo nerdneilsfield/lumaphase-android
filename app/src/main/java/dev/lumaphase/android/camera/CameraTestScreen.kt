@@ -52,6 +52,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import dev.lumaphase.android.layout.BuiltInLayouts
 import dev.lumaphase.android.layout.BuiltInSelection
+import dev.lumaphase.android.camera.CameraStationStore
+import dev.lumaphase.android.camera.StationCalibration
+import dev.lumaphase.android.camera.StationCheck
+import dev.lumaphase.android.camera.TagDiagnostics
 import dev.lumaphase.android.layout.ImportedLayout
 import dev.lumaphase.android.layout.LayoutImportException
 import dev.lumaphase.android.layout.LayoutJsonImport
@@ -90,6 +94,12 @@ fun CameraTestScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var cameraRetryAvailable by remember { mutableStateOf(false) }
     var previewInfo by remember { mutableStateOf<CameraPreviewInfo?>(null) }
+    var cameraInfo by remember { mutableStateOf<CameraHardware?>(null) }
+    var station by remember { mutableStateOf<StationCalibration?>(null) }
+    var stationMode by remember { mutableStateOf(false) }
+    var stationInvalid by remember { mutableStateOf(false) }
+    var stationStatus by remember { mutableStateOf<String?>(null) }
+    var tagDiagnostics by remember { mutableStateOf<String?>(null) }
     var surfaceAvailable by remember { mutableStateOf(false) }
     var textureView by remember { mutableStateOf<TextureView?>(null) }
     var frozenBitmap by remember { mutableStateOf<Bitmap?>(null) }
@@ -119,6 +129,19 @@ fun CameraTestScreen(
     // The controller listener is created once by DisposableEffect; read the latest selection
     // through state instead of capturing the initial local value.
     val currentSelected = rememberUpdatedState(selected)
+    val stationLayoutCheck = remember(station, selected) {
+        station?.let { saved ->
+            selected?.let { layout -> StationCalibrationRules.validateLayout(saved, layout) }
+                ?: StationCheck(false, "no source layout")
+        }
+    }
+    val stationCameraCheck = remember(station, cameraInfo) {
+        station?.let { saved ->
+            cameraInfo?.let { hardware -> StationCalibrationRules.validateCamera(saved, hardware) }
+                ?: StationCheck(false, "camera not open")
+        }
+    }
+    val stationUsable = stationLayoutCheck?.ok == true && stationCameraCheck?.ok == true
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -176,6 +199,11 @@ fun CameraTestScreen(
                 }
             }
         }.start()
+    }
+
+    LaunchedEffect(Unit) {
+        station = CameraStationStore.load(context)
+        if (station != null) stationStatus = "已保存固定工站（未启用）"
     }
 
     // Restore only through the real parsers; a broken preference is discarded, never guessed.
@@ -287,11 +315,26 @@ fun CameraTestScreen(
                 textureView?.let { controller.configurePreview(it) }
             }
 
+            override fun onCameraInfo(info: CameraHardware) {
+                cameraInfo = info
+            }
+
+            override fun onStationInvalid(message: String) {
+                stationMode = false
+                stationInvalid = true
+                reading = null
+                tagDiagnostics = null
+                frozenDiagnostics = null
+                errorMessage = message
+                status = "固定工站失效，请重新标定"
+            }
+
             override fun onFrame(frame: GrayFrame) {
                 frozenFrame = frame
                 frozenBitmap = frame.toDisplayBitmap()
                 frozenDescription = frame.description
                 frozenDiagnostics = null
+                tagDiagnostics = null
                 reading = null
                 manualMode = false
                 manualPoints = emptyList()
@@ -302,6 +345,7 @@ fun CameraTestScreen(
             override fun onRecognition(readingValue: RecognitionReading, generation: Int) {
                 reading = readingValue
                 frozenDiagnostics = null
+                tagDiagnostics = tagDiagnosticsText(readingValue)
                 val profile = currentSelected.value?.profile
                 val visual = profile?.let { RecognitionVisualState.of(readingValue, it) }
                 status = when (visual) {
@@ -309,7 +353,11 @@ fun CameraTestScreen(
                     RecognitionVisual.FAILED -> "已定位 · CRC FAIL"
                     RecognitionVisual.LOCATED_WARNING -> "已定位 · 未通过"
                     RecognitionVisual.NOT_LOCATED, null -> "未定位"
-                } + if (readingValue.manual) "（手动四角）" else ""
+                } + when {
+                    readingValue.station -> "（固定工站）"
+                    readingValue.manual -> "（手动四角）"
+                    else -> ""
+                }
                 cameraRetryAvailable = false
                 errorMessage = null
             }
@@ -321,6 +369,7 @@ fun CameraTestScreen(
                 elapsedMillis: Long,
             ) {
                 reading = readingValue
+                tagDiagnostics = tagDiagnosticsText(readingValue)
                 val visual = currentSelected.value?.let { RecognitionVisualState.of(readingValue, it.profile) }
                 status = when (visual) {
                     RecognitionVisual.PASS -> "冻结帧 · 已定位 · CRC PASS"
@@ -343,6 +392,7 @@ fun CameraTestScreen(
 
             override fun onFrozenAnalysisError(message: String) {
                 reading = null
+                tagDiagnostics = null
                 frozenDiagnostics = "冻结帧分析失败：$message"
                 status = "冻结帧分析失败"
                 errorMessage = message
@@ -350,6 +400,7 @@ fun CameraTestScreen(
 
             override fun onAnalysisError(message: String, generation: Int) {
                 reading = null
+                tagDiagnostics = null
                 cameraRetryAvailable = true
                 errorMessage = message
                 status = "分析不可用"
@@ -376,6 +427,20 @@ fun CameraTestScreen(
     }
 
     val builtInRotation = androidSelection?.rotationDeg ?: macSelection?.rotationDeg ?: 0
+    // Start/stop the owner only when the view or foreground lifecycle changes. Camera info,
+    // station data and layout state must not reopen the camera from this effect.
+    LaunchedEffect(resumed, permissionGranted, surfaceAvailable, textureView) {
+        val view = textureView
+        if (resumed && permissionGranted && surfaceAvailable && view != null) {
+            controller.start(view)
+        } else {
+            controller.stopLive()
+            controller.stop()
+        }
+    }
+
+    // Mode selection only changes the analysis mode. It never calls start(view), so a camera
+    // still opening cannot be stopped/reopened merely because cameraInfo or station arrives.
     LaunchedEffect(
         resumed,
         permissionGranted,
@@ -385,31 +450,43 @@ fun CameraTestScreen(
         selected?.patternRotationDeg,
         manualMode,
         frozenBitmap,
+        stationMode,
+        station,
+        stationInvalid,
+        cameraInfo,
     ) {
-        val view = textureView
-        if (resumed && permissionGranted && surfaceAvailable && view != null) {
-            controller.start(view)
+        val selectedValue = selected
+        val stationValue = station
+        if (resumed && permissionGranted && surfaceAvailable && textureView != null) {
             when {
-                selected != null && !manualMode && frozenBitmap == null -> controller.startLive(selected)
-                selected == null -> controller.stopLive()
+                selectedValue == null -> controller.stopLive()
+                stationInvalid && frozenBitmap == null -> controller.stopLive()
+                !manualMode && frozenBitmap == null && stationMode && stationValue != null &&
+                    stationLayoutCheck?.ok == true && stationCameraCheck?.ok == true ->
+                    controller.startStationLive(selectedValue, stationValue)
+                !manualMode && frozenBitmap == null && stationMode ->
+                    controller.stopLive()
+                !manualMode && frozenBitmap == null -> controller.startLive(selectedValue)
                 // A frozen frame or manual analysis already stopped live in requestFrame.
                 // Calling stopLive again here would clear the queued same-frame analysis.
                 else -> Unit
             }
         } else {
             controller.stopLive()
-            controller.stop()
         }
     }
 
     LaunchedEffect(selected?.layoutId, selected?.patternRotationDeg) {
         reading = null
+        tagDiagnostics = null
         manualMode = false
         manualPoints = emptyList()
         frozenBitmap = null
         frozenFrame = null
         frozenDescription = null
         frozenDiagnostics = null
+        stationMode = false
+        stationInvalid = false
     }
 
     LaunchedEffect(selectedIndex, layouts, sourceText) {
@@ -584,6 +661,7 @@ fun CameraTestScreen(
                     manualMode = true
                     manualPoints = emptyList()
                     reading = null
+                    tagDiagnostics = null
                     status = "请点动态区外边界 TL/TR/BR/BL（不含 ArUco）"
                 },
             ) {
@@ -599,6 +677,7 @@ fun CameraTestScreen(
                     manualMode = false
                     manualPoints = emptyList()
                     reading = null
+                    tagDiagnostics = null
                     status = "实时自动识别"
                 },
             ) {
@@ -611,10 +690,111 @@ fun CameraTestScreen(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
+        if (frozenFrame != null && manualPoints.size == 4) {
+            Button(
+                enabled = selected != null && cameraInfo != null,
+                onClick = {
+                    val layout = selected
+                    val hardware = cameraInfo
+                    val frame = frozenFrame
+                    if (layout == null || hardware == null || frame == null) {
+                        errorMessage = "缺少源布局或相机信息，无法保存固定工站"
+                    } else {
+                        val saved: StationCalibration? = runCatching {
+                            StationCalibrationRules.create(
+                                layout,
+                                hardware,
+                                frame,
+                                manualPoints,
+                                System.currentTimeMillis(),
+                            )
+                        }.getOrElse { failure ->
+                            errorMessage = failure.message ?: "固定工站保存失败"
+                            null
+                        }
+                        if (saved != null) {
+                            CameraStationStore.save(context, saved)
+                            station = saved
+                            stationMode = false
+                            stationInvalid = false
+                            stationStatus =
+                                "固定工站已保存；启用前需确认布局/相机/帧参数一致"
+                            status = "固定工站已保存，未启用"
+                        }
+                    }
+                },
+            ) {
+                Text("保存固定工站")
+            }
+            Text(
+                "固定工站使用未标定 raw-pixel 平面单应，仅 Android 测试；不是 KB4 标定。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+        station?.let { saved ->
+            val layoutReason = stationLayoutCheck?.reason
+            val cameraReason = stationCameraCheck?.reason
+            val validation = when {
+                stationUsable -> "参数匹配"
+                layoutReason != null -> "布局不匹配：$layoutReason"
+                cameraReason != null -> "相机不匹配：$cameraReason"
+                else -> "参数不匹配"
+            }
+            Text(
+                "固定工站：layout=${saved.sourceLayoutId} · camera=${saved.cameraId} · " +
+                    "frame=${saved.frameWidthPx}x${saved.frameHeightPx} · " +
+                    "crop=[${saved.cropLeftPx},${saved.cropTopPx},${saved.cropRightPx},${saved.cropBottomPx}] · " +
+                    "sensor=${saved.sensorOrientationDeg} display=${saved.displayRotationDeg}",
+                fontFamily = FontFamily.Monospace,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "固定工站校验：$validation。布局/相机在启用前校验，帧尺寸/crop/方向在 RUN 每帧校验；移机不会被自动发现，只有固定位置可复用，失效必须重新手动四角。",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            stationStatus?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    enabled = stationUsable && !stationMode && !stationInvalid,
+                    onClick = {
+                        stationMode = true
+                        stationInvalid = false
+                        frozenFrame = null
+                        frozenBitmap = null
+                        frozenDescription = null
+                        frozenDiagnostics = null
+                        manualMode = false
+                        manualPoints = emptyList()
+                        reading = null
+                        tagDiagnostics = null
+                        status = "固定工站连续 RUN"
+                    },
+                ) {
+                    Text("启用固定 RUN")
+                }
+                Button(
+                    onClick = {
+                        CameraStationStore.clear(context)
+                        station = null
+                        stationMode = false
+                        stationInvalid = false
+                        stationStatus = null
+                        reading = null
+                        tagDiagnostics = null
+                        status = "固定工站已清除；请拍摄一帧后重新手动四角"
+                    },
+                ) {
+                    Text("清除固定工站")
+                }
+            }
+        }
         frozenDescription?.let {
             Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
         frozenDiagnostics?.let {
+            Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        }
+        tagDiagnostics?.let {
             Text(it, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
         }
         errorMessage?.let {
@@ -623,8 +803,14 @@ fun CameraTestScreen(
         if (cameraRetryAvailable) {
             Button(onClick = {
                 val view = textureView ?: return@Button
+                if (stationMode) {
+                    stationMode = false
+                    stationInvalid = false
+                    stationStatus = "已退出固定工站；重新打开相机后使用自动识别"
+                }
                 errorMessage = null
                 cameraRetryAvailable = false
+                status = "重新打开相机（自动识别）"
                 controller.retryCamera(view, selected)
             }) {
                 Text("重新打开相机")
@@ -872,7 +1058,12 @@ private fun RecognitionResultBar(reading: RecognitionReading?, selected: Importe
     }
     val visual = RecognitionVisualState.of(reading, selected.profile)
     val located = if (reading.located) {
-        "定位 ${if (reading.manual) "手动四角" else "4/4"} · RMS ${reading.geometryErrorPx?.let { format1(it) } ?: "—"} px"
+        val mode = when {
+            reading.station -> "固定工站"
+            reading.manual -> "手动四角"
+            else -> "4/4"
+        }
+        "定位 $mode · RMS ${reading.geometryErrorPx?.let { format1(it) } ?: "—"} px"
     } else {
         "未定位 · 缺 IDs ${reading.missingMarkerIds.joinToString(",")}"
     }
@@ -915,6 +1106,26 @@ private fun bandLine(band: BandReading): String {
 }
 
 private fun format1(value: Double): String = String.format(Locale.ROOT, "%.1f", value)
+
+private fun tagDiagnosticsText(reading: RecognitionReading): String? {
+    if (reading.tagObservations.isEmpty()) return null
+    val lines = reading.tagObservations.joinToString("\n") { tag ->
+        if (!tag.detected) {
+            "tag ${tag.markerId}: missing · corners=null · outer=null · edge/6=null"
+        } else {
+            val corners = tag.corners?.joinToString(", ") {
+                "(${format1(it.x)},${format1(it.y)})"
+            } ?: "null"
+            val sides = tag.sideLengthsPx?.joinToString(",") {
+                String.format(Locale.ROOT, "%.1f", it)
+            } ?: "null"
+            "tag ${tag.markerId}: corners=[$corners] · sides=[$sides]" +
+                " · min_edge=${tag.minEdgePx?.let { format1(it) } ?: "null"} px" +
+                " · edge/6=${tag.edgeMinDiv6Px?.let { format1(it) } ?: "null"} px (proxy)"
+        }
+    }
+    return lines + "\n目标参考 outer≥60 px / cell≥8 px（仅目标文案，不硬判）"
+}
 
 private fun layoutMetadata(layout: ImportedLayout): String = buildString {
     appendLine("layout_id ${layout.layoutId}")

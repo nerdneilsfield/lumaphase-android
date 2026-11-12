@@ -101,6 +101,8 @@ class CameraController(private val context: Context) {
         fun onStatus(message: String)
         fun onError(message: String)
         fun onPreviewInfo(preview: CameraPreviewInfo)
+        fun onCameraInfo(info: CameraHardware)
+        fun onStationInvalid(message: String)
         fun onFrame(frame: GrayFrame)
         fun onRecognition(reading: RecognitionReading, generation: Int)
         fun onFrozenRecognition(
@@ -140,6 +142,20 @@ class CameraController(private val context: Context) {
     @Volatile private var live = false
     @Volatile private var liveLayout: ImportedLayout? = null
     @Volatile private var manualLayout: ImportedLayout? = null
+    private data class StationRun(
+        val station: StationCalibration,
+        val targetPoints: List<DoublePoint>,
+    )
+
+    private data class PendingStation(
+        val generation: Int,
+        val layout: ImportedLayout,
+        val station: StationCalibration,
+    )
+
+    @Volatile private var cameraHardware: CameraHardware? = null
+    @Volatile private var stationRun: StationRun? = null
+    @Volatile private var pendingStation: PendingStation? = null
     @Volatile private var frozenLayout: ImportedLayout? = null
     @Volatile private var pendingFreeze: PendingFreeze? = null
     @Volatile private var recognitionPipeline: RecognitionPipeline? = null
@@ -160,6 +176,10 @@ class CameraController(private val context: Context) {
             configurePreview(view)
             return
         }
+        // A view/camera restart must keep an explicitly enabled station intent. The UI mode
+        // effect may have posted it while the previous camera was already stopping, and the
+        // intent is revalidated from onConfigured after the new generation is ready.
+        val pendingStationIntent = pendingStation
         stop()
         val texture = view.surfaceTexture
         if (texture == null) {
@@ -169,6 +189,7 @@ class CameraController(private val context: Context) {
         textureView = view
         latestDisplayRotationDeg = displayRotationDegrees(view)
         val startGeneration = generation.incrementAndGet()
+        pendingStation = pendingStationIntent?.copy(generation = startGeneration)
         ensureCameraThread()
         val handler = cameraHandler ?: run {
             notifyError("相机线程不可用")
@@ -184,6 +205,7 @@ class CameraController(private val context: Context) {
         live = false
         liveLayout = null
         manualLayout = null
+        clearStation()
         cancelFrozenCapture()
         ready = false
         textureView = null
@@ -234,13 +256,15 @@ class CameraController(private val context: Context) {
      * The analysis executor constructs OpenCV on its own thread.
      */
     fun startLive(layout: ImportedLayout) {
-        // A layout/rotation switch or restore explicitly cancels an unfinished freeze capture.
+        // A layout/rotation switch or restore explicitly cancels an unfinished freeze capture
+        // and must also leave a fixed-station RUN even when the layout id is unchanged.
         cancelFrozenCapture()
-        if (live && liveLayout?.layoutId == layout.layoutId) return
+        if (live && liveLayout?.layoutId == layout.layoutId && stationRun == null) return
+        analysisGate.nextGeneration()
+        clearStation()
         live = true
         liveLayout = layout
         manualLayout = null
-        analysisGate.nextGeneration()
         pipelineError = null
     }
 
@@ -255,11 +279,107 @@ class CameraController(private val context: Context) {
 
     /** Stops continuous analysis and invalidates every in-flight/queued result. */
     fun stopLive() {
+        analysisGate.nextGeneration()
         live = false
         liveLayout = null
         manualLayout = null
+        clearStation()
+        cancelFrozenCapture()
+    }
+
+    /**
+     * Starts continuous RUN with an explicitly saved station. The station source digest,
+     * camera id and preview size are checked before live starts; frame size/crop/orientation
+     * are checked on every frame. It reuses the same analysisExecutor and sampler/decoder.
+     */
+    fun startStationLive(layout: ImportedLayout, station: StationCalibration) {
+        val hardware = cameraHardware
+        val layoutCheck = StationCalibrationRules.validateLayout(station, layout)
+        val cameraCheck = hardware?.let { StationCalibrationRules.validateCamera(station, it) }
+        when (stationStartAction(ready, hardware, layoutCheck, cameraCheck)) {
+            StationStartAction.INVALID -> {
+                val reason = layoutCheck.reason ?: cameraCheck?.reason ?: "unknown mismatch"
+                notifyStationInvalid("固定工站失效：$reason，请重新标定")
+            }
+            StationStartAction.WAIT_READY -> {
+                // The camera is still opening. Keep the explicit enable intent; apply it
+                // from onConfigured, never turn "not ready" into a station-invalid event.
+                clearStation()
+                pendingStation = PendingStation(generation.get(), layout, station)
+                mainHandler.post { listener?.onStatus("固定工站已启用，等待相机就绪") }
+            }
+            StationStartAction.START -> activateStation(layout, station)
+        }
+    }
+
+    private fun activateStation(layout: ImportedLayout, station: StationCalibration) {
+        clearStation()
         cancelFrozenCapture()
         analysisGate.nextGeneration()
+        live = true
+        liveLayout = layout
+        manualLayout = null
+        stationRun = StationRun(station, station.targetCorners.map { DoublePoint(it.x, it.y) })
+        pipelineError = null
+    }
+
+    private fun applyPendingStation(generationAtStart: Int) {
+        val pending = pendingStation ?: return
+        if (pending.generation != generationAtStart || generation.get() != generationAtStart) {
+            pendingStation = null
+            return
+        }
+        pendingStation = null
+        val hardware = cameraHardware
+        val layoutCheck = StationCalibrationRules.validateLayout(pending.station, pending.layout)
+        val cameraCheck = hardware?.let {
+            StationCalibrationRules.validateCamera(pending.station, it)
+        }
+        when (stationStartAction(true, hardware, layoutCheck, cameraCheck)) {
+            StationStartAction.START -> {
+                activateStation(pending.layout, pending.station)
+                mainHandler.post { listener?.onStatus("固定工站连续 RUN") }
+            }
+            StationStartAction.INVALID -> {
+                val reason = layoutCheck.reason ?: cameraCheck?.reason ?: "unknown mismatch"
+                notifyStationInvalid("固定工站失效：$reason，请重新标定")
+            }
+            StationStartAction.WAIT_READY -> Unit
+        }
+    }
+
+    private fun clearStation() {
+        stationRun = null
+        pendingStation = null
+    }
+
+    /**
+     * Station state invalidation is a main-thread transaction. Camera callbacks pass their
+     * camera generation/analysis token; the main owner re-checks both before stopping a newer
+     * live/auto run. A stale invalid callback therefore cannot clear a new station or auto mode.
+     */
+    private fun notifyStationInvalid(
+        message: String,
+        cameraGeneration: Int? = null,
+        analysisId: Int? = null,
+        requireActiveStation: Boolean = false,
+    ) {
+        val action = Runnable {
+            if (cameraGeneration != null && generation.get() != cameraGeneration) return@Runnable
+            if (analysisId != null && analysisGate.currentGeneration() != analysisId) return@Runnable
+            if (requireActiveStation && stationRun == null) return@Runnable
+            live = false
+            liveLayout = null
+            manualLayout = null
+            clearStation()
+            analysisGate.nextGeneration()
+            listener?.onStationInvalid(message)
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            action.run()
+        } else {
+            mainHandler.post(action)
+        }
     }
 
     /**
@@ -277,6 +397,7 @@ class CameraController(private val context: Context) {
         live = false
         liveLayout = null
         manualLayout = layout
+        clearStation()
         cancelFrozenCapture()
         analysisExecutor.execute { runAnalysis(frame, layout, gen, manual = true, targetPoints = targetPoints) }
     }
@@ -294,6 +415,7 @@ class CameraController(private val context: Context) {
         live = false
         liveLayout = null
         manualLayout = null
+        clearStation()
         cancelFrozenCapture()
         start(view)
         if (layout != null) startLive(layout)
@@ -352,6 +474,14 @@ class CameraController(private val context: Context) {
             characteristics = cameraCharacteristics
             sensorOrientationDeg = sensor
             previewSizeValue = size
+            val hardware = CameraHardware(
+                cameraId = cameraId,
+                sensorOrientationDeg = sensor,
+                previewWidthPx = size.width,
+                previewHeightPx = size.height,
+            )
+            cameraHardware = hardware
+            mainHandler.post { listener?.onCameraInfo(hardware) }
             val preview = CameraPreviewInfo(
                 rawWidthPx = size.width,
                 rawHeightPx = size.height,
@@ -390,7 +520,7 @@ class CameraController(private val context: Context) {
                         // have advanced the generation. A plain read-then-increment here could
                         // write back an older value and let a stale onOpened reopen the camera.
                         if (generation.compareAndSet(generationAtOpen, generationAtOpen + 1)) {
-                            ready = false
+                            publishReadyFalse()
                             live = false
                             liveLayout = null
                             manualLayout = null
@@ -407,7 +537,7 @@ class CameraController(private val context: Context) {
 
                     override fun onError(camera: CameraDevice, error: Int) {
                         if (generation.compareAndSet(generationAtOpen, generationAtOpen + 1)) {
-                            ready = false
+                            publishReadyFalse()
                             live = false
                             liveLayout = null
                             manualLayout = null
@@ -473,14 +603,16 @@ class CameraController(private val context: Context) {
                             )
                         }
                         captureSession.setRepeatingRequest(builder.build(), null, cameraHandler)
-                        ready = true
+                        // Ready, pending-station application and mode state are owned by the
+                        // main thread. The camera thread only posts this transition.
                         mainHandler.post {
-                            if (generation.get() == generationAtStart) {
-                                listener?.onStatus(
-                                    "预览就绪：${size.width}x${size.height}；" +
-                                        "显示旋转=$latestDisplayRotationDeg",
-                                )
-                            }
+                            if (generation.get() != generationAtStart) return@post
+                            ready = true
+                            applyPendingStation(generationAtStart)
+                            listener?.onStatus(
+                                "预览就绪：${size.width}x${size.height}；" +
+                                    "显示旋转=$latestDisplayRotationDeg",
+                            )
                         }
                     } catch (error: Throwable) {
                         closeAll()
@@ -490,7 +622,7 @@ class CameraController(private val context: Context) {
 
                 override fun onConfigureFailed(captureSession: CameraCaptureSession) {
                     if (generation.get() == generationAtStart) {
-                        ready = false
+                        publishReadyFalse()
                         closeAll()
                         notifyError("相机会话配置失败")
                     }
@@ -522,8 +654,29 @@ class CameraController(private val context: Context) {
                         sensorOrientationDeg,
                         latestDisplayRotationDeg,
                     )
+                    val stationRunValue = stationRun
+                    if (stationRunValue != null) {
+                        val check = StationCalibrationRules.validateFrame(stationRunValue.station, frame)
+                        if (!check.ok) {
+                            analysisGate.finish(analysisId)
+                            notifyStationInvalid(
+                                "固定工站失效：${check.reason}，请重新标定",
+                                cameraGeneration = generationAtFrame,
+                                analysisId = analysisId,
+                                requireActiveStation = true,
+                            )
+                            return
+                        }
+                    }
                     analysisExecutor.execute {
-                        runAnalysis(frame, layout, analysisId, manual = false)
+                        runAnalysis(
+                            frame,
+                            layout,
+                            analysisId,
+                            manual = false,
+                            targetPoints = stationRunValue?.targetPoints.orEmpty(),
+                            station = stationRunValue != null,
+                        )
                     }
                 } catch (error: Throwable) {
                     analysisGate.finish(analysisId)
@@ -560,17 +713,19 @@ class CameraController(private val context: Context) {
         manual: Boolean,
         targetPoints: List<dev.lumaphase.android.camera.DoublePoint> = emptyList(),
         frozen: Boolean = false,
+        station: Boolean = false,
     ) {
         val startedAtNanos = System.nanoTime()
         try {
-            if (!isCurrentAnalysis(analysisId, layout, manual, frozen)) return
-            val pipeline = getPipeline()
+            if (!isCurrentAnalysis(analysisId, layout, manual, frozen, station)) return
+            val pipeline = getPipeline(analysisId)
             if (pipeline == null) {
                 notifyAnalysisFailure(pipelineError ?: "OpenCV 初始化失败", analysisId, frozen)
                 return
             }
             val reading = try {
-                if (manual) pipeline.analyzeManual(frame, layout, targetPoints)
+                if (station) pipeline.analyzeStation(frame, layout, targetPoints)
+                else if (manual) pipeline.analyzeManual(frame, layout, targetPoints)
                 else pipeline.analyze(frame, layout)
             } catch (error: Throwable) {
                 notifyAnalysisFailure("分析失败：${error.message ?: error.javaClass.simpleName}", analysisId, frozen)
@@ -580,7 +735,7 @@ class CameraController(private val context: Context) {
                 val elapsedMs = (System.nanoTime() - startedAtNanos) / 1_000_000
                 val completedAtMillis = System.currentTimeMillis()
                 mainHandler.post {
-                    if (isCurrentAnalysis(analysisId, layout, manual, frozen)) {
+                    if (isCurrentAnalysis(analysisId, layout, manual, frozen, station)) {
                         listener?.onFrozenRecognition(
                             reading,
                             frame.timestampNanos,
@@ -589,9 +744,9 @@ class CameraController(private val context: Context) {
                         )
                     }
                 }
-            } else if (isCurrentAnalysis(analysisId, layout, manual, frozen)) {
+            } else if (isCurrentAnalysis(analysisId, layout, manual, frozen, station)) {
                 mainHandler.post {
-                    if (isCurrentAnalysis(analysisId, layout, manual, frozen)) {
+                    if (isCurrentAnalysis(analysisId, layout, manual, frozen, station)) {
                         listener?.onRecognition(reading, analysisId)
                     }
                 }
@@ -602,7 +757,7 @@ class CameraController(private val context: Context) {
         }
     }
 
-    private fun getPipeline(): RecognitionPipeline? {
+    private fun getPipeline(analysisId: Int): RecognitionPipeline? {
         recognitionPipeline?.let { return it }
         if (pipelineFailed) return null
         return try {
@@ -610,11 +765,16 @@ class CameraController(private val context: Context) {
         } catch (error: Throwable) {
             pipelineFailed = true
             pipelineError = "OpenCV 初始化失败：${error.message ?: error.javaClass.simpleName}"
-            // Stop copying/analyzing frames after the first failure. Do not invalidate the
-            // generation here: runAnalysis must still be able to deliver this one error to UI.
-            live = false
-            liveLayout = null
-            manualLayout = null
+            // Station state is main-owner state; only clear it if this analysis is still
+            // current, so an old failure cannot tear down a newer mode.
+            mainHandler.post {
+                if (analysisGate.currentGeneration() == analysisId) {
+                    live = false
+                    liveLayout = null
+                    manualLayout = null
+                    clearStation()
+                }
+            }
             null
         }
     }
@@ -624,11 +784,13 @@ class CameraController(private val context: Context) {
         layout: ImportedLayout,
         manual: Boolean,
         frozen: Boolean = false,
+        station: Boolean = false,
     ): Boolean {
         if (analysisGate.currentGeneration() != analysisId) return false
         return when {
             frozen -> !live && frozenLayout?.layoutId == layout.layoutId
             manual -> !live && manualLayout?.layoutId == layout.layoutId
+            station -> live && liveLayout?.layoutId == layout.layoutId && stationRun != null
             else -> live && liveLayout?.layoutId == layout.layoutId
         }
     }
@@ -694,6 +856,14 @@ class CameraController(private val context: Context) {
         }
     }
 
+    /** Ready publication is main-owned; a stale camera callback cannot clear a newer open. */
+    private fun publishReadyFalse() {
+        val expectedGeneration = generation.get()
+        mainHandler.post {
+            if (generation.get() == expectedGeneration) ready = false
+        }
+    }
+
     private fun choosePreviewSize(map: android.hardware.camera2.params.StreamConfigurationMap): Size {
         val yuvSizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.toList().orEmpty()
         val previewSizes = map.getOutputSizes(SurfaceTexture::class.java)?.toList().orEmpty()
@@ -712,7 +882,7 @@ class CameraController(private val context: Context) {
     }
 
     private fun closeAll() {
-        ready = false
+        publishReadyFalse()
         cancelFrozenCapture()
         session?.close()
         session = null

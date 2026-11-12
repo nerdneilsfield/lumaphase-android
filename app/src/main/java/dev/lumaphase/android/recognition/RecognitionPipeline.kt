@@ -6,6 +6,7 @@ import dev.lumaphase.android.camera.GrayFrame
 import dev.lumaphase.android.camera.LocateFailure
 import dev.lumaphase.android.camera.LocatedScreen
 import dev.lumaphase.android.camera.ScreenLocator
+import dev.lumaphase.android.camera.TagObservation
 import dev.lumaphase.android.layout.ImportedLayout
 import dev.lumaphase.android.layout.RectPx
 import org.opencv.core.MatOfPoint2f
@@ -45,6 +46,10 @@ data class RecognitionReading(
     /** Raw ArUco ids matrix shape as reported by ScreenLocator, for diagnostics. */
     val locatorIdsRows: Int = 0,
     val locatorIdsCols: Int = 0,
+    /** Per expected marker size diagnostics, including explicit missing entries. */
+    val tagObservations: List<TagObservation> = emptyList(),
+    /** True when the fixed-station raw-pixel homography was used instead of ScreenLocator. */
+    val station: Boolean = false,
 )
 
 /**
@@ -85,6 +90,7 @@ class RecognitionPipeline(
                 failureReason = located.reason,
                 locatorIdsRows = located.idsRows,
                 locatorIdsCols = located.idsCols,
+                tagObservations = located.tagObservations,
             )
         }
         val screen = located as LocatedScreen
@@ -103,6 +109,7 @@ class RecognitionPipeline(
                 status = RecognitionStatus.NO_DECODE,
                 idsRows = screen.idsRows,
                 idsCols = screen.idsCols,
+                tagObservations = screen.tagObservations,
             )
         }
         return buildReading(
@@ -117,6 +124,7 @@ class RecognitionPipeline(
             manual = false,
             idsRows = screen.idsRows,
             idsCols = screen.idsCols,
+            tagObservations = screen.tagObservations,
         )
     }
 
@@ -169,6 +177,57 @@ class RecognitionPipeline(
         )
     }
 
+    /**
+     * Continuous fixed-station analysis. It reuses the manual dynamic-rectangle source points
+     * and the same sampler/decoder, but the station flag makes the result distinct from the
+     * one-shot manual four-corner action. The homography is raw frame pixels and is not a
+     * KB4 calibrated projection.
+     */
+    fun analyzeStation(
+        frame: GrayFrame,
+        layout: ImportedLayout,
+        targetPoints: List<DoublePoint>,
+    ): RecognitionReading {
+        if (targetPoints.size != 4) {
+            return failure(frame, "STATION_CORNERS_INCOMPLETE")
+        }
+        val source = dev.lumaphase.android.camera.ManualGeometry.dynamicCorners(layout.dynamicRectPx)
+        val homography = try {
+            homographyEstimator(source, targetPoints)
+        } catch (error: Throwable) {
+            null
+        }
+        if (homography == null || homography.any { !it.isFinite() }) {
+            return failure(frame, "STATION_HOMOGRAPHY_INVALID")
+        }
+        val sample = try {
+            FrameSampler.sample(frame, layout, homography)
+        } catch (error: Throwable) {
+            return failure(
+                frame,
+                "SAMPLER_FAILED: ${error.message ?: error.javaClass.simpleName}",
+                located = true,
+                homography = homography,
+                markerCorners = listOf(targetPoints),
+                status = RecognitionStatus.NO_DECODE,
+            )
+        }
+        return buildReading(
+            frame = frame,
+            layout = layout,
+            sample = sample,
+            detected = emptyList(),
+            missing = emptyList(),
+            rms = null,
+            homography = homography,
+            markerCorners = listOf(targetPoints),
+            manual = false,
+            station = true,
+            idsRows = 0,
+            idsCols = 0,
+        )
+    }
+
     private fun buildReading(
         frame: GrayFrame,
         layout: ImportedLayout,
@@ -181,6 +240,8 @@ class RecognitionPipeline(
         manual: Boolean,
         idsRows: Int,
         idsCols: Int,
+        station: Boolean = false,
+        tagObservations: List<TagObservation> = emptyList(),
     ): RecognitionReading {
         val bands = sample.bands.map { band ->
             if (band.levels == null) {
@@ -227,6 +288,8 @@ class RecognitionPipeline(
             homography = homography,
             markerFrameCorners = markerCorners,
             manual = manual,
+            station = station,
+            tagObservations = tagObservations,
             failureReason = bands.firstOrNull { it.decode == null }?.reason,
             locatorIdsRows = idsRows,
             locatorIdsCols = idsCols,
@@ -267,6 +330,7 @@ class RecognitionPipeline(
         markerCorners: List<List<DoublePoint>> = emptyList(),
         idsRows: Int = 0,
         idsCols: Int = 0,
+        tagObservations: List<TagObservation> = emptyList(),
     ): RecognitionReading = RecognitionReading(
         located = located,
         detectedMarkerIds = detected,
@@ -282,5 +346,6 @@ class RecognitionPipeline(
         failureReason = reason,
         locatorIdsRows = idsRows,
         locatorIdsCols = idsCols,
+        tagObservations = tagObservations,
     )
 }

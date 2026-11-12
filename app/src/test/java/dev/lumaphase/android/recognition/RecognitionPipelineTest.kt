@@ -104,6 +104,26 @@ class RecognitionPipelineTest {
     }
 
     @Test
+    fun fixedStationUsesTheSameManualSamplerAndPayloadOracle() {
+        val layout = gridLayout()
+        val points = ManualGeometry.dynamicCorners(layout.dynamicRectPx)
+        val reading = RecognitionPipeline(
+            FakeLocator(LocateFailure(emptyList(), listOf(0, 1, 2, 3), "station does not locate")),
+            homographyEstimator = { _, _ ->
+                doubleArrayOf(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0)
+            },
+        ).analyzeStation(filledFrame(layout, 0x1234), layout, points)
+        assertTrue(reading.located)
+        assertTrue(reading.station)
+        assertTrue(!reading.manual)
+        assertEquals(RecognitionStatus.DECODED, reading.status)
+        assertEquals(listOf(0x1234), reading.bands.single().decode!!.payloadCandidates)
+        assertEquals(4, reading.markerFrameCorners.single().size)
+        assertEquals(0, reading.locatorIdsRows)
+        assertEquals(0, reading.locatorIdsCols)
+    }
+
+    @Test
     fun notLocatedHasNoPayloadAndNoBands() {
         val reading = RecognitionPipeline(
             FakeLocator(

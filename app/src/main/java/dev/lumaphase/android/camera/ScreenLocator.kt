@@ -32,6 +32,7 @@ data class LocatedScreen(
     val reprojectionRmsPx: Double?,
     val idsRows: Int = 0,
     val idsCols: Int = 0,
+    val tagObservations: List<TagObservation> = emptyList(),
 ) : LocateResult
 
 data class LocateFailure(
@@ -40,6 +41,7 @@ data class LocateFailure(
     val reason: String,
     val idsRows: Int = 0,
     val idsCols: Int = 0,
+    val tagObservations: List<TagObservation> = emptyList(),
 ) : LocateResult
 
 /**
@@ -183,6 +185,7 @@ class ScreenLocator : FrameLocator {
                 detected[id] = DoubleArray(8) { floats[it].toDouble() }
             }
             val detectedIds = detected.keys.sorted()
+            val tagObservations = TagDiagnostics.observe(markers.map { it.id }, detected, frame)
             val match = LocatorMath.matchCorners(markers, detected)
             if (!match.complete) {
                 return LocateFailure(
@@ -195,6 +198,7 @@ class ScreenLocator : FrameLocator {
                     },
                     idsRows = idsRows,
                     idsCols = idsCols,
+                    tagObservations = tagObservations,
                 )
             }
 
@@ -207,15 +211,16 @@ class ScreenLocator : FrameLocator {
                     "HOMOGRAPHY_FAILED",
                     idsRows,
                     idsCols,
+                    tagObservations,
                 )
                 try {
                     if (hMat.empty()) {
-                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_EMPTY", idsRows, idsCols)
+                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_EMPTY", idsRows, idsCols, tagObservations)
                     }
                     val h = DoubleArray(9)
                     hMat.get(0, 0, h)
                     if (h.any { !it.isFinite() }) {
-                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_NOT_FINITE", idsRows, idsCols)
+                        return LocateFailure(detectedIds, emptyList(), "HOMOGRAPHY_NOT_FINITE", idsRows, idsCols, tagObservations)
                     }
                     return LocatedScreen(
                         homography = h,
@@ -225,6 +230,7 @@ class ScreenLocator : FrameLocator {
                         reprojectionRmsPx = LocatorMath.reprojectionRms(h, match.source, match.target),
                         idsRows = idsRows,
                         idsCols = idsCols,
+                        tagObservations = tagObservations,
                     )
                 } finally {
                     hMat.release()
