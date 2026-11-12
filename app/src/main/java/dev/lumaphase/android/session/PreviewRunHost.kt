@@ -49,6 +49,8 @@ class PreviewRunHost(
     private val scheduler: RunScheduler,
     private val nowMs: () -> Long,
     val plan: List<SessionPhase> = DEFAULT_SESSION_PLAN,
+    /** Optional per-step durations; null means wait for an explicit operator advance. */
+    private val planDurationsNs: List<Long?>? = null,
     private val finishWithoutHost: (SessionClosedReason) -> Unit = {},
 ) {
     private var effects: RunEffects? = null
@@ -60,6 +62,18 @@ class PreviewRunHost(
 
     /** True while a phase callback is armed. */
     var phaseRunning = false
+        private set
+
+    /** A null-duration step (CR-002 TAG calibration) waits for the operator. */
+    var manualWait = false
+        private set
+
+    /**
+     * The duration this activation of the current phase was planned for, including the
+     * remaining time when a recalibration resumes. The session writes it into the phase event,
+     * so the event and the armed timer agree.
+     */
+    var activationDurationNs: Long? = null
         private set
 
     var phaseRemainingMs = 0L
@@ -77,6 +91,19 @@ class PreviewRunHost(
 
     var started = false
         private set
+
+    /** True while a geometry change is waiting for the operator to confirm TAG again. */
+    var recalibrating = false
+        private set
+
+    private data class RecalibrationResume(
+        val phase: SessionPhase,
+        val phaseIndex: Int,
+        val remainingMs: Long,
+        val wasRunning: Boolean,
+    )
+
+    private var recalibrationResume: RecalibrationResume? = null
 
     /** Latched once the session log can no longer be trusted: no new frames, no new segment. */
     var logFailed = false
@@ -155,6 +182,11 @@ class PreviewRunHost(
             host.startProducingFrames()
             return
         }
+        if (manualWait) {
+            host.requestDisplayTarget()
+            host.startProducingFrames()
+            return
+        }
         host.refreshSegmentEnvironment()
         if (hasVisibleTarget) host.expectSegmentReason(SegmentStartReason.RESUME)
         // Establish the display target/segment before allowing frames to run, so a resumed
@@ -178,8 +210,33 @@ class PreviewRunHost(
     }
 
     /** A geometry or configuration change: the next segment must read the new environment. */
-    fun onGeometryChanged() {
-        if (draining || sealed) return
+    /**
+     * A geometry/configuration change. For TAG, [requireTagReconfirmation] pauses the current
+     * plan and shows the calibration target again; the original phase index and remaining
+     * time are retained, so confirmation resumes the same RUN rather than restarting it.
+     */
+    fun onGeometryChanged(requireTagReconfirmation: Boolean = false) {
+        if (draining || sealed || !started) return
+        if (requireTagReconfirmation && !manualWait) {
+            val currentPhase = plan.getOrNull((phaseIndex - 1).coerceAtLeast(0)) ?: return
+            val wasRunning = phaseRunning
+            if (wasRunning) {
+                phaseRemainingMs = (deadlineMs - nowMs()).coerceAtLeast(1L)
+            }
+            scheduler.cancelPhaseAdvance()
+            phaseRunning = false
+            recalibrationResume = RecalibrationResume(
+                phase = currentPhase,
+                phaseIndex = phaseIndex,
+                remainingMs = phaseRemainingMs,
+                wasRunning = wasRunning,
+            )
+            recalibrating = true
+            manualWait = true
+            activationDurationNs = null
+            effects?.showPhase(SessionPhase.CALIBRATION)
+            return
+        }
         effects?.refreshSegmentEnvironment()
     }
 
@@ -226,6 +283,26 @@ class PreviewRunHost(
         if (host != null) host.seal(closeReason) else finishWithoutHost(closeReason)
     }
 
+    /** Explicit operator continue for a null-duration calibration step. */
+    fun advanceManually() {
+        if (!manualWait || sealed || draining || logFailed) return
+        manualWait = false
+        val resume = recalibrationResume
+        recalibrationResume = null
+        recalibrating = false
+        if (resume != null) {
+            phaseIndex = resume.phaseIndex
+            phaseRemainingMs = resume.remainingMs
+            activationDurationNs = if (resume.wasRunning) resume.remainingMs * 1_000_000L else null
+            effects?.showPhase(resume.phase)
+            if (resume.wasRunning) {
+                arm(phaseRemainingMs.coerceAtLeast(1L))
+            }
+            return
+        }
+        enterNextPhase()
+    }
+
     // ---- internals -----------------------------------------------------------------------
 
     private fun enterNextPhase() {
@@ -236,9 +313,20 @@ class PreviewRunHost(
             return
         }
         phaseIndex++
-        val durationMs = (phase.plannedDurationNs ?: 0L) / 1_000_000L
+        val durationNs = planDurationsNs?.let { it.getOrNull(phaseIndex - 1) }
+            ?: phase.plannedDurationNs
+        activationDurationNs = durationNs
         host.showPhase(phase)
-        arm(durationMs)
+        if (durationNs == null) {
+            phaseRunning = false
+            manualWait = true
+            phaseRemainingMs = 0L
+            scheduler.cancelPhaseAdvance()
+        } else {
+            manualWait = false
+            val durationMs = durationNs / 1_000_000L
+            arm(durationMs)
+        }
     }
 
     private fun arm(delayMs: Long) {

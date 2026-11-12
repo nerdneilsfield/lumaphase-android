@@ -40,6 +40,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import dev.lumaphase.android.CR002DisplayActivity
 import dev.lumaphase.android.camera.CameraTestActivity
 import dev.lumaphase.android.layout.LayoutChoice
 import dev.lumaphase.android.layout.LayoutExport
@@ -122,6 +123,13 @@ private fun SettingsScreen() {
             dynamicSummary = null
             sessionDirectory = null
         }
+    }
+
+    val cr002Launcher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        dynamicSummary = CR002DisplayActivity.summary(result.data)
+        sessionDirectory = CR002DisplayActivity.sessionDirectory(result.data)
     }
 
     val sessionTreeLauncher = rememberLauncherForActivityResult(
@@ -283,6 +291,35 @@ private fun SettingsScreen() {
                 "panel runs at that rate.",
             style = MaterialTheme.typography.bodySmall,
         )
+
+        Text("CR-002 显示诊断", style = MaterialTheme.typography.labelLarge)
+        Text(
+            "TAG 使用固定横屏大 Tag→RUN，需点画面继续；A 为六段 1 s settle + 3 s 采样；" +
+                "B 为 60 s VSync 黑白；A/B 不强制横屏。普通 OPTC 会话保持不变。",
+            style = MaterialTheme.typography.bodySmall,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CR002DisplayActivity.Mode.entries.forEach { cr002Mode ->
+                Button(
+                    onClick = {
+                        dynamicSummary = null
+                        sessionDirectory = null
+                        sessionExportStatus = null
+                        cr002Launcher.launch(
+                            CR002DisplayActivity.intent(
+                                context,
+                                cr002Mode,
+                                layoutChoice,
+                                rotationDeg,
+                            ),
+                        )
+                    },
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Text(if (cr002Mode == CR002DisplayActivity.Mode.TAG) "TAG 横屏" else cr002Mode.wire)
+                }
+            }
+        }
 
         Text("相机识别测试", style = MaterialTheme.typography.labelLarge)
         Text(

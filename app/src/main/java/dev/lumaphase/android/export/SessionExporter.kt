@@ -1,5 +1,6 @@
 package dev.lumaphase.android.export
 
+import dev.lumaphase.android.layout.DisplayLayout
 import dev.lumaphase.android.layout.LayoutJson
 import dev.lumaphase.android.session.SealedSession
 import dev.lumaphase.android.session.SessionFiles
@@ -33,7 +34,11 @@ object SessionExporter {
                 SessionJson.writeManifest(writer, sealed.manifest)
             }
             writeText(sessionDirectory, SessionFiles.LAYOUT) { writer ->
-                LayoutJson.write(writer, sealed.layouts)
+                if (sealed.manifest.schemaVersion == "1.2") {
+                    LayoutJson.writeTyped(writer, sealed.layouts)
+                } else {
+                    LayoutJson.write(writer, sealed.layouts.mapNotNull { it.optcLayout })
+                }
             }
             writeText(sessionDirectory, SessionFiles.DISPLAY_PROFILE) { writer ->
                 SessionJson.writeDisplayProfile(writer, sealed.displayProfile)

@@ -6,8 +6,14 @@ import android.os.Looper
 import android.util.Log
 import android.view.Choreographer
 import android.view.Surface
+import dev.lumaphase.android.layout.CalibrationTarget
+import dev.lumaphase.android.layout.DisplayLayout
+import dev.lumaphase.android.layout.DiagnosticPattern
+import dev.lumaphase.android.layout.FullscreenDiagnosticLayout
 import dev.lumaphase.android.layout.LevelRect
 import dev.lumaphase.android.layout.PatternLayout
+import dev.lumaphase.android.layout.calibrationPaintRects
+import dev.lumaphase.android.layout.fullscreenDiagnosticRects
 import dev.lumaphase.android.layout.RectPx
 import dev.lumaphase.android.layout.moduleRects
 import dev.lumaphase.android.layout.paddingRects
@@ -62,7 +68,9 @@ class DynamicRenderThread(
     private var egl: EglCore? = null
     private var renderer: RectRenderer? = null
     private var probe: PresentationProbe? = null
+    private var displayLayout: DisplayLayout? = null
     private var layout: PatternLayout? = null
+    private var patternProfile: LayoutProfile = LayoutProfile.F68
     private var staticRects: List<LevelRect> = emptyList()
     private var dynamicRects: List<RectPx> = emptyList()
     private var paddingLevelRects: List<LevelRect> = emptyList()
@@ -107,7 +115,7 @@ class DynamicRenderThread(
         surface: Surface,
         widthPx: Int,
         heightPx: Int,
-        layout: PatternLayout,
+        layout: DisplayLayout,
         displayMode: DisplayModeInfo,
     ) = post {
         if (released) return@post
@@ -154,9 +162,11 @@ class DynamicRenderThread(
         probe = presentationProbe
 
         requestFrameRate(surface)
+        val optcProfile = layout.optcLayout?.profile
         Log.i(
             TAG,
-            "run started ${runState.runId} $surfaceInstanceId ${layout.profile.name} " +
+            "run started ${runState.runId} $surfaceInstanceId ${optcProfile?.name ?: "typed"} " +
+                "layout_type=${layout.layoutType.wire} layout=${layout.layoutId} " +
                 "pattern_rotation_deg=$patternRotationDeg drawable=${widthPx}x$heightPx " +
                 "display ${displayMode.description}",
         )
@@ -167,7 +177,7 @@ class DynamicRenderThread(
     }
 
     /** A configuration change keeps the run, the pending identities and the sequence. */
-    fun onSurfaceSizeChanged(surface: Surface, widthPx: Int, heightPx: Int, layout: PatternLayout) = post {
+    fun onSurfaceSizeChanged(surface: Surface, widthPx: Int, heightPx: Int, layout: DisplayLayout) = post {
         if (released) return@post
         updateGeometry(widthPx, heightPx, layout)
         requestFrameRate(surface)
@@ -276,14 +286,31 @@ class DynamicRenderThread(
 
     private val drainTickRunnable = Runnable { drainTick() }
 
-    private fun updateGeometry(widthPx: Int, heightPx: Int, layout: PatternLayout) {
-        this.layout = layout
+    private fun updateGeometry(widthPx: Int, heightPx: Int, layout: DisplayLayout) {
+        this.displayLayout = layout
         this.viewportWidthPx = widthPx
         this.viewportHeightPx = heightPx
-        // Marker rectangles and module rectangles do not change between dynamic states.
-        staticRects = staticMarkerRects(layout)
-        dynamicRects = moduleRects(layout)
-        paddingLevelRects = paddingRects(layout)
+        when (layout) {
+            is DisplayLayout.Optc -> {
+                this.layout = layout.layout
+                this.patternProfile = layout.layout.profile
+                staticRects = staticMarkerRects(layout.layout)
+                dynamicRects = moduleRects(layout.layout)
+                paddingLevelRects = paddingRects(layout.layout)
+            }
+            is CalibrationTarget -> {
+                this.layout = null
+                staticRects = calibrationPaintRects(layout)
+                dynamicRects = emptyList()
+                paddingLevelRects = emptyList()
+            }
+            is FullscreenDiagnosticLayout -> {
+                this.layout = null
+                staticRects = emptyList()
+                dynamicRects = emptyList()
+                paddingLevelRects = emptyList()
+            }
+        }
     }
 
     private fun requestFrameRate(surface: Surface) {
@@ -320,7 +347,9 @@ class DynamicRenderThread(
         if (released || !scheduled) return
         val core = egl ?: return
         val rects = renderer ?: return
-        val currentLayout = layout ?: return
+        val currentDisplay = displayLayout ?: return
+        val currentOptc = currentDisplay.optcLayout
+        val currentLayout = currentOptc
         val surfaceId = surfaceInstanceId ?: return
         val currentRun = runState.runId
         if (viewportWidthPx <= 0 || viewportHeightPx <= 0) return
@@ -340,15 +369,26 @@ class DynamicRenderThread(
         // frame carries, so the picture can never disagree with its recorded phase.
         val currentStamp = stampProvider()
         val cardLabel = currentStamp.cardLabel
+        // The frame identity is allocated before any failable draw or swap, and it is consumed
+        // even when that draw or swap fails. The diagnostic parity below and the recorded
+        // identity use this same value, so a failed frame cannot silently reuse the old parity.
+        val frameKind = currentStamp.frameKind
+        val allocatedNativeFrameId: Long? = if (frameKind != null) {
+            val id = nextNativeFrameId
+            nextNativeFrameId += 1
+            id
+        } else {
+            null
+        }
         // A new dynamic state gets a new sequence; it is consumed even if the swap fails.
         // Stationary phases carry no dynamic state and consume no sequence (contract section 1).
         val encoded: EncodedPattern?
         val renderSeq: ULong?
-        if (cardLabel == null) {
+        if (currentOptc != null && cardLabel == null) {
             val nextSeq = nextRenderSeq
             nextRenderSeq += 1uL
             renderSeq = nextSeq
-            encoded = PatternEncoder.encode(nextSeq, profile)
+            encoded = PatternEncoder.encode(nextSeq, currentOptc.profile)
         } else {
             renderSeq = null
             encoded = null
@@ -359,18 +399,31 @@ class DynamicRenderThread(
             viewportHeightPx,
             staticRects.size + dynamicRects.size + paddingLevelRects.size + 1,
         )
-        for (rect in staticRects) rects.addRect(rect.rect, rect.level)
-        if (encoded != null) {
-            dynamicRects.forEachIndexed { index, rect ->
-                rects.addRect(rect, encoded.moduleCodes[index])
+        if (currentOptc == null) {
+            val diagnosticRects = when (currentDisplay) {
+                is CalibrationTarget -> staticRects
+                is FullscreenDiagnosticLayout ->
+                    fullscreenDiagnosticRects(
+                        currentDisplay,
+                        allocatedNativeFrameId ?: nextNativeFrameId,
+                    )
+                else -> emptyList()
             }
-            paddingLevelRects.forEach { padding -> rects.addRect(padding.rect, padding.level) }
+            diagnosticRects.forEach { rects.addRect(it.rect, it.level) }
         } else {
-            // Stationary target: the dynamic area becomes a uniform mid grey (contract section 5).
-            rects.addRect(currentLayout.dynamicRectPx, CardBitmap.MID_GREY_LEVEL)
+            for (rect in staticRects) rects.addRect(rect.rect, rect.level)
+            if (encoded != null) {
+                dynamicRects.forEachIndexed { index, rect ->
+                    rects.addRect(rect, encoded.moduleCodes[index])
+                }
+                paddingLevelRects.forEach { padding -> rects.addRect(padding.rect, padding.level) }
+            } else {
+                // Stationary target: the dynamic area becomes a uniform mid grey (contract section 5).
+                rects.addRect(currentLayout!!.dynamicRectPx, CardBitmap.MID_GREY_LEVEL)
+            }
         }
         rects.endFrame()
-        if (cardLabel != null) {
+        if (cardLabel != null && currentLayout != null) {
             val textureId = cardTexture(rects, currentLayout, cardLabel, currentStamp.sessionId)
             if (textureId != 0) {
                 rects.drawTexture(textureId, currentLayout.dynamicRectPx, viewportWidthPx, viewportHeightPx)
@@ -406,7 +459,6 @@ class DynamicRenderThread(
             swapError = core.lastError()
             "eglSwapBuffers failed 0x${Integer.toHexString(swapError)}"
         }
-        val frameKind = currentStamp.frameKind
         if (frameKind == null) {
             // No session is recording: the pattern is shown, but nothing is logged.
             queryPendingFrames()
@@ -419,11 +471,11 @@ class DynamicRenderThread(
             sessionId = currentStamp.sessionId,
             segmentId = currentStamp.segmentId,
             surfaceInstanceId = surfaceId,
-            nativeFrameId = (nextNativeFrameId++).toString(),
+            nativeFrameId = allocatedNativeFrameId!!.toString(),
             frameKind = frameKind,
             phase = currentStamp.phase,
             renderSeq = renderSeq,
-            layoutId = currentStamp.layoutId.ifEmpty { currentLayout.layoutId },
+            layoutId = currentStamp.layoutId.ifEmpty { currentDisplay.layoutId },
         )
         sink.onSubmitted(
             FrameSubmission(
@@ -533,7 +585,7 @@ class DynamicRenderThread(
      */
     private fun reportDisplayStarted(
         surface: Surface,
-        layout: PatternLayout,
+        layout: DisplayLayout,
         widthPx: Int,
         heightPx: Int,
     ) {

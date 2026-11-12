@@ -1,5 +1,6 @@
 package dev.lumaphase.android.session
 
+import dev.lumaphase.android.layout.DisplayLayout
 import dev.lumaphase.android.layout.PatternLayout
 import dev.lumaphase.android.timing.DisplayStamp
 import dev.lumaphase.android.timing.DisplayStart
@@ -81,7 +82,7 @@ data class SegmentEnvironment(
  */
 data class SealedSession(
     val manifest: ManifestDocument,
-    val layouts: List<PatternLayout>,
+    val layouts: List<DisplayLayout>,
     val displayProfile: DisplayProfileDocument,
     val summary: SessionSummary,
     val directoryName: String,
@@ -102,10 +103,11 @@ class SessionController(
     private val environment: AppEnvironment,
     private val eventLog: SessionLog,
     private val clock: () -> Long = { System.nanoTime() },
+    private val schemaVersion: String = "1.1",
 ) : FrameTimingSink {
 
     private val lock = Any()
-    private val layouts = LinkedHashMap<String, PatternLayout>()
+    private val layouts = LinkedHashMap<String, DisplayLayout>()
     private val segments = ArrayList<SegmentSnapshot>()
     private val framesInOrder = LinkedHashMap<FrameKey, FrameState>()
     private val generatedPerSegment = LinkedHashMap<String, Int>()
@@ -120,6 +122,12 @@ class SessionController(
     private var sealed: Boolean = false
 
     private var activeSegment: SegmentSnapshot? = null
+    private data class PendingPhase(
+        val previous: SessionPhase?,
+        val next: SessionPhase,
+        val plannedDurationNs: Long?,
+    )
+    private var pendingPhase: PendingPhase? = null
     private var nextSegmentIndex = 0
     private var closedRawNs: Long? = null
     private var pendingStartReason: SegmentStartReason? = null
@@ -176,6 +184,10 @@ class SessionController(
     }
 
     fun registerLayout(layout: PatternLayout) {
+        registerLayout(DisplayLayout.Optc(layout))
+    }
+
+    fun registerLayout(layout: DisplayLayout) {
         synchronized(lock) { layouts[layout.layoutId] = layout }
     }
 
@@ -190,15 +202,31 @@ class SessionController(
         }
     }
 
-    /** Advances the plan and records it; the frames that follow carry the new phase. */
-    fun advancePhase(next: SessionPhase) {
+    /**
+     * Advances the plan and records it. [force] is used by CR-002 repeated CALIBRATION steps,
+     * which must emit a new phase event even though the phase enum value is unchanged.
+     */
+    fun advancePhase(
+        next: SessionPhase,
+        force: Boolean = false,
+        plannedDurationNs: Long? = null,
+    ) {
         synchronized(lock) {
             if (sealed) return
             val previous = phase
-            if (previous == next) return
-            emitPhaseChanged(previous, next, next.plannedDurationNs)
+            if (previous == next && !force) return
+            val planned = plannedDurationNs ?: next.plannedDurationNs
             phase = next
-            publishStamp(phase = next.name, frameKind = next.frameKind, cardLabel = next.cardLabel)
+            if (activeSegment == null) {
+                // The new phase event belongs to the segment opened by the upcoming display
+                // start. Defering the event and stamp until onDisplayStarted prevents a
+                // PHASE_CHANGED with segment_id=null and prevents an old frame from taking
+                // the new phase before the new display target exists.
+                pendingPhase = PendingPhase(previous, next, planned)
+            } else {
+                emitPhaseChanged(previous, next, planned)
+                publishStamp(phase = next.name, frameKind = next.frameKind, cardLabel = next.cardLabel)
+            }
         }
     }
 
@@ -246,6 +274,20 @@ class SessionController(
             // specific reason first when it knows one.
             endActiveSegmentLocked(SegmentEndReason.SURFACE_CHANGED)
             startSegmentLocked(displayStart)
+            val phasePending = pendingPhase
+            pendingPhase = null
+            if (phasePending != null) {
+                publishStamp(
+                    phase = phasePending.next.name,
+                    frameKind = phasePending.next.frameKind,
+                    cardLabel = phasePending.next.cardLabel,
+                )
+                emitPhaseChanged(
+                    phasePending.previous,
+                    phasePending.next,
+                    phasePending.plannedDurationNs,
+                )
+            }
         }
     }
 
@@ -539,7 +581,7 @@ class SessionController(
             }
         }
         val segmentSnapshots: List<SegmentSnapshot>
-        val layoutList: List<PatternLayout>
+        val layoutList: List<DisplayLayout>
         synchronized(lock) {
             segmentSnapshots = segments.toList()
             // The layout collection is a set: the same immutable layout may be referenced by
@@ -548,7 +590,7 @@ class SessionController(
         }
         return SealedSession(
             manifest = ManifestDocument(
-                schemaVersion = SessionConstants.SCHEMA_VERSION,
+                schemaVersion = schemaVersion,
                 protocolVersion = SessionConstants.PROTOCOL_VERSION,
                 sessionId = sessionId,
                 platform = SessionConstants.PLATFORM,
@@ -565,7 +607,7 @@ class SessionController(
             ),
             layouts = layoutList,
             displayProfile = DisplayProfileDocument(
-                schemaVersion = SessionConstants.SCHEMA_VERSION,
+                schemaVersion = schemaVersion,
                 // No calibration is imported here: an empty set, never a fabricated one.
                 profiles = emptyList(),
                 segmentBindings = segmentSnapshots.map { segment ->

@@ -45,7 +45,7 @@ object LayoutJsonImport {
         LayoutJson.KEY_PADDING,
     )
 
-    private val SCHEMA_VERSIONS = setOf("1.0", "1.1")
+    private val SCHEMA_VERSIONS = setOf("1.0", "1.1", "1.2")
     private val ROTATIONS = setOf(0, 90, 180, 270)
     private const val EXPECTED_SAMPLING = 0.6
 
@@ -91,6 +91,18 @@ object LayoutJsonImport {
     private fun parseLayout(schemaVersion: String, json: JsonObject): ImportedLayout {
         val layoutId = json.string(LayoutJson.KEY_LAYOUT_ID)
         if (layoutId.isBlank()) throw LayoutImportException("layout_id must not be blank")
+        val layoutType = if (schemaVersion == "1.2") {
+            val wire = json.string(LayoutJson.KEY_LAYOUT_TYPE)
+            LayoutType.entries.firstOrNull { it.wire == wire }
+                ?: throw LayoutImportException("unknown layout_type '$wire'")
+        } else {
+            LayoutType.OPTC
+        }
+        if (layoutType != LayoutType.OPTC) {
+            throw LayoutImportException(
+                "layout '$layoutId' is ${layoutType.wire}, not an OPTC payload layout",
+            )
+        }
 
         val profile = when (val value = json.string(LayoutJson.KEY_LAYOUT_PROFILE)) {
             LayoutProfile.F68.name -> LayoutProfile.F68
@@ -245,6 +257,7 @@ object LayoutJsonImport {
             levelLow = levelLow,
             levelHigh = levelHigh,
             samplingInnerFraction = samplingInnerFraction,
+            layoutType = layoutType,
         )
     }
 

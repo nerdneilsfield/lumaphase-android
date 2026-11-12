@@ -58,6 +58,21 @@ class LayoutJsonImportTest {
     }
 
     @Test
+    fun schema12OptcIsAcceptedAndTypedNonOptcIsRefusedByCameraImport() {
+        val document = validObject("camera/valid-1.1.json")
+        document.addProperty("schema_version", "1.2")
+        layout(document).addProperty("layout_type", "OPTC")
+        val imported = LayoutJsonImport.parse(document.toString()).single()
+        assertEquals("1.2", imported.schemaVersion)
+        assertEquals(LayoutType.OPTC, imported.layoutType)
+
+        layout(document).addProperty("layout_type", "CALIBRATION_TARGET")
+        assertThrows(LayoutImportException::class.java) {
+            LayoutJsonImport.parse(document.toString())
+        }
+    }
+
+    @Test
     fun schema10LayoutWithoutExtensionIsStillSingleRow() {
         val imported = LayoutJsonImport.parse(resource("camera/valid-1.0.json"))
         val layout = imported.single()

@@ -5,6 +5,7 @@ import android.util.AttributeSet
 import android.util.Log
 import android.view.SurfaceHolder
 import android.view.SurfaceView
+import dev.lumaphase.android.layout.DisplayLayout
 import dev.lumaphase.android.layout.PatternLayout
 import dev.lumaphase.android.protocol.LayoutProfile
 import dev.lumaphase.android.timing.DisplayStamp
@@ -44,7 +45,7 @@ class DynamicPatternSurface @JvmOverloads constructor(
     private var runStarted = false
     private var stopped = false
     private var halting = false
-    private var lastLayout: PatternLayout? = null
+    private var lastDisplayLayout: DisplayLayout? = null
     private var canStartRun: () -> Boolean = { true }
 
     private var lastCapabilities: ProbeCapabilities? = null
@@ -133,16 +134,20 @@ class DynamicPatternSurface @JvmOverloads constructor(
      * the Surface being recreated.
      */
     fun showLayout(layout: PatternLayout) {
+        showDisplayLayout(DisplayLayout.Optc(layout))
+    }
+
+    fun showDisplayLayout(layout: DisplayLayout) {
         // Keep the most recent geometry even when the host currently forbids frames, so a
         // later resume can request the display target without waiting for another size callback.
-        lastLayout = layout
+        lastDisplayLayout = layout
         if (stopped || halting || !canStartRun()) return
         if (surfaceWidthPx <= 0 || surfaceHeightPx <= 0) return
         val running = ensureEngine() ?: return
         val surface = holder.surface
         if (!surface.isValid) return
         if (runStarted) {
-            running.onSurfaceSizeChanged(surface, surfaceWidthPx, surfaceHeightPx, layout)
+            running.onSurfaceSizeChanged(surface, surfaceWidthPx, surfaceHeightPx, lastDisplayLayout ?: layout)
             return
         }
         runStarted = true
@@ -150,7 +155,7 @@ class DynamicPatternSurface @JvmOverloads constructor(
             surface = surface,
             widthPx = surfaceWidthPx,
             heightPx = surfaceHeightPx,
-            layout = layout,
+            layout = lastDisplayLayout ?: layout,
             displayMode = currentDisplayMode() ?: DisplayModeInfo(0, 0f, 0, 0, 0),
         )
     }
@@ -160,7 +165,7 @@ class DynamicPatternSurface @JvmOverloads constructor(
      * (used when the app returns to the foreground on a Surface that survived).
      */
     fun reportCurrentDisplay() {
-        lastLayout?.let { showLayout(it) }
+        lastDisplayLayout?.let { showDisplayLayout(it) }
     }
 
     /**
@@ -192,7 +197,7 @@ class DynamicPatternSurface @JvmOverloads constructor(
         // the display target first; the run schedules itself. Never start the vsync callback
         // before a layout exists, because the one-shot callback would then stand down.
         if (!runStarted) {
-            lastLayout?.let { showLayout(it) }
+            lastDisplayLayout?.let { showDisplayLayout(it) }
             return
         }
         engine?.resumeScheduling()

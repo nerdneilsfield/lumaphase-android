@@ -37,6 +37,11 @@
             android:theme="@style/Theme.Lumaphase" />
 
         <activity
+            android:name=".CR002DisplayActivity"
+            android:exported="false"
+            android:theme="@style/Theme.Lumaphase" />
+
+        <activity
             android:name=".camera.CameraTestActivity"
             android:exported="false"
             android:screenOrientation="portrait"

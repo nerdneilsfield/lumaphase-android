@@ -114,6 +114,99 @@ class PreviewRunHostTest {
     }
 
     @Test
+    fun cr002CalibrationWaitsForOperatorAndUsesPlannedDiagnosticDurations() {
+        val scheduler = FakeScheduler()
+        val effects = Recorder()
+        val host = PreviewRunHost(
+            scheduler,
+            { 0L },
+            plan = listOf(
+                SessionPhase.CALIBRATION,
+                SessionPhase.WARMUP,
+                SessionPhase.SESSION_CARD,
+                SessionPhase.RUNNING,
+                SessionPhase.END_CARD,
+            ),
+            planDurationsNs = listOf(
+                null,
+                SessionPhase.WARMUP.plannedDurationNs,
+                SessionPhase.SESSION_CARD.plannedDurationNs,
+                SessionPhase.RUNNING.plannedDurationNs,
+                SessionPhase.END_CARD.plannedDurationNs,
+            ),
+        )
+        host.bind(effects)
+        host.startNewRun()
+        assertEquals(listOf(SessionPhase.CALIBRATION), effects.phases)
+        assertTrue(host.manualWait)
+        assertFalse(host.phaseRunning)
+        assertEquals(0, scheduler.scheduleCount)
+
+        host.onHostStarted(hasVisibleTarget = false)
+        assertEquals(0, scheduler.scheduleCount)
+        host.advanceManually()
+        assertEquals(SessionPhase.WARMUP, effects.phases.last())
+        assertEquals(10_000L, scheduler.pendingDelayMs)
+        assertFalse(host.manualWait)
+
+        val aPlan = PreviewRunHost(
+            scheduler,
+            { 0L },
+            plan = List(6) { SessionPhase.CALIBRATION },
+            planDurationsNs = listOf(
+                1_000_000_000L, 3_000_000_000L, 1_000_000_000L,
+                3_000_000_000L, 1_000_000_000L, 3_000_000_000L,
+            ),
+        )
+        aPlan.bind(effects)
+        aPlan.startNewRun()
+        assertEquals(1_000L, scheduler.pendingDelayMs)
+    }
+
+    @Test
+    fun tagGeometryChangeRequiresReconfirmationAndResumesTheSamePhase() {
+        val scheduler = FakeScheduler()
+        val effects = Recorder()
+        var now = 0L
+        val host = PreviewRunHost(
+            scheduler,
+            { now },
+            plan = listOf(
+                SessionPhase.CALIBRATION,
+                SessionPhase.WARMUP,
+                SessionPhase.SESSION_CARD,
+                SessionPhase.RUNNING,
+                SessionPhase.END_CARD,
+            ),
+            planDurationsNs = listOf(null, 1_000_000_000L, 2_000_000_000L, 3_000_000_000L, 2_000_000_000L),
+        )
+        host.bind(effects)
+        host.startNewRun()
+        assertTrue(host.manualWait)
+        host.advanceManually()
+        assertEquals(SessionPhase.WARMUP, effects.phases.last())
+        assertEquals(1_000L, scheduler.pendingDelayMs)
+        assertEquals(2, host.phaseIndex)
+
+        now = 300L
+        host.onGeometryChanged(requireTagReconfirmation = true)
+        assertTrue(host.manualWait)
+        assertTrue(host.recalibrating)
+        assertFalse(host.phaseRunning)
+        assertEquals(1, scheduler.scheduleCount)
+        host.advanceManually()
+        assertFalse(host.manualWait)
+        assertFalse(host.recalibrating)
+        // The same current phase resumes; it is not restarted from the initial calibration.
+        assertEquals(SessionPhase.WARMUP, effects.phases.last())
+        assertEquals(2, host.phaseIndex)
+        assertEquals(2, scheduler.scheduleCount)
+        // Only the time left of the original phase is armed and reported as its plan.
+        assertEquals(700L, scheduler.pendingDelayMs)
+        assertEquals(700_000_000L, host.activationDurationNs)
+    }
+
+    @Test
     fun theWholePlanRunsInOrderThenOpensOneDrain() {
         val (runHost, scheduler, effects) = host()
         runHost.startNewRun()

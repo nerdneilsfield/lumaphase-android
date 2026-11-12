@@ -32,6 +32,8 @@ data class ImportedLayout(
     val levelLow: Int,
     val levelHigh: Int,
     val samplingInnerFraction: Double?,
+    /** 1.2 type; legacy 1.0/1.1 layouts are OPTC. */
+    val layoutType: LayoutType = LayoutType.OPTC,
 ) {
     /** Geometry name for display; a missing extension is the legacy single-row layout. */
     val geometryLabel: String get() = geometry?.wire ?: "legacy single-row"

@@ -26,6 +26,7 @@ object LayoutJson {
     const val KEY_LAYOUTS = "layouts"
 
     const val KEY_LAYOUT_ID = "layout_id"
+    const val KEY_LAYOUT_TYPE = "layout_type"
     const val KEY_LAYOUT_PROFILE = "layout_profile"
     const val KEY_GEOMETRY_PROFILE = "geometry_profile"
     const val KEY_GRID_ROWS = "grid_rows"
@@ -61,6 +62,9 @@ object LayoutJson {
     const val KEY_CELL_SIZE_PX = "cell_size_px"
     const val KEY_QUIET_ZONE_PX = "quiet_zone_px"
     const val KEY_CORNERS_PX = "corners_px"
+    const val KEY_REFERENCE_REGIONS = "reference_regions"
+    const val KEY_REFERENCE_INDEX = "index"
+    const val KEY_DIAGNOSTIC_PATTERN = "diagnostic_pattern"
 
     val ROOT_KEYS: List<String> = listOf(KEY_SCHEMA_VERSION, KEY_LAYOUTS)
 
@@ -126,6 +130,164 @@ object LayoutJson {
      */
     fun toJson(layouts: List<PatternLayout>): String =
         StringWriter().also { write(it, layouts) }.toString()
+
+    /** Writes a schema 1.2 typed display collection, including non-OPTC real geometry. */
+    fun writeTyped(writer: Writer, layouts: List<DisplayLayout>) {
+        val json = JsonWriter(writer)
+        json.setIndent("  ")
+        json.beginObject()
+        json.name(KEY_SCHEMA_VERSION).value("1.2")
+        json.name(KEY_LAYOUTS).beginArray()
+        for (layout in layouts) {
+            json.beginObject()
+            json.name(KEY_LAYOUT_ID).value(layout.layoutId)
+            json.name(KEY_LAYOUT_TYPE).value(layout.layoutType.wire)
+            when (layout) {
+                is DisplayLayout.Optc -> writeOptcFields(json, layout.layout)
+                is CalibrationTarget -> writeCalibrationFields(json, layout)
+                is FullscreenDiagnosticLayout -> writeDiagnosticFields(json, layout)
+            }
+            json.endObject()
+        }
+        json.endArray()
+        json.endObject()
+        json.flush()
+    }
+
+    fun toTypedJson(layouts: List<DisplayLayout>): String =
+        StringWriter().also { writeTyped(it, layouts) }.toString()
+
+    private fun writeCalibrationFields(json: JsonWriter, target: CalibrationTarget) {
+        writeCommon(
+            json,
+            target.drawableWidthPx,
+            target.drawableHeightPx,
+            target.patternRotationDeg,
+            target.patternWidthPx,
+            target.patternHeightPx,
+            target.patternToDrawable,
+        )
+        json.name(KEY_MARKERS).beginArray()
+        for (marker in target.markers) writeMarker(json, marker)
+        json.endArray()
+        json.name(KEY_REFERENCE_REGIONS).beginArray()
+        for (reference in target.references) {
+            json.beginObject()
+            json.name(KEY_REFERENCE_INDEX).value(reference.index.toLong())
+            json.name(KEY_RECT_PX)
+            writeRect(json, reference.rectPx)
+            json.name(KEY_LEVEL).value(reference.level.toLong())
+            json.endObject()
+        }
+        json.endArray()
+    }
+
+    private fun writeDiagnosticFields(json: JsonWriter, diagnostic: FullscreenDiagnosticLayout) {
+        writeCommon(
+            json,
+            diagnostic.drawableWidthPx,
+            diagnostic.drawableHeightPx,
+            diagnostic.patternRotationDeg,
+            diagnostic.patternWidthPx,
+            diagnostic.patternHeightPx,
+            diagnostic.patternToDrawable,
+        )
+        json.name(KEY_DIAGNOSTIC_PATTERN).value(diagnostic.diagnosticPattern.wire)
+        json.name(KEY_LEVEL_LOW).value(diagnostic.levelLow.toLong())
+        json.name(KEY_LEVEL_HIGH).value(diagnostic.levelHigh.toLong())
+    }
+
+    private fun writeCommon(
+        json: JsonWriter,
+        drawableWidthPx: Int,
+        drawableHeightPx: Int,
+        patternRotationDeg: Int,
+        patternWidthPx: Int,
+        patternHeightPx: Int,
+        patternToDrawable: List<Int>,
+    ) {
+        json.name(KEY_DRAWABLE_WIDTH_PX).value(drawableWidthPx.toLong())
+        json.name(KEY_DRAWABLE_HEIGHT_PX).value(drawableHeightPx.toLong())
+        json.name(KEY_COORDINATE_SYSTEM).value(PatternLayoutBuilder.COORDINATE_SYSTEM)
+        json.name(KEY_PATTERN_ROTATION_DEG).value(patternRotationDeg.toLong())
+        json.name(KEY_PATTERN_WIDTH_PX).value(patternWidthPx.toLong())
+        json.name(KEY_PATTERN_HEIGHT_PX).value(patternHeightPx.toLong())
+        json.name(KEY_PATTERN_TO_DRAWABLE).beginArray()
+        for (row in 0 until 3) {
+            json.beginArray()
+            for (column in 0 until 3) {
+                json.value(patternToDrawable[row * 3 + column].toLong())
+            }
+            json.endArray()
+        }
+        json.endArray()
+    }
+
+    private fun writeMarker(json: JsonWriter, marker: MarkerLayout) {
+        json.beginObject()
+        json.name(KEY_ID).value(marker.id.toLong())
+        json.name(KEY_DICTIONARY).value(marker.dictionary)
+        json.name(KEY_MARKER_SIZE_BITS).value(marker.markerSizeBits.toLong())
+        json.name(KEY_BORDER_BITS).value(marker.borderBits.toLong())
+        json.name(KEY_CELL_SIZE_PX).value(marker.cellSizePx.toLong())
+        json.name(KEY_QUIET_ZONE_PX).value(marker.quietZonePx.toLong())
+        json.name(KEY_CORNERS_PX).beginArray()
+        for (corner in marker.cornersPx) {
+            json.beginArray()
+            json.value(corner.x.toLong())
+            json.value(corner.y.toLong())
+            json.endArray()
+        }
+        json.endArray()
+        json.endObject()
+    }
+
+    private fun writeOptcFields(json: JsonWriter, layout: PatternLayout) {
+        json.name(KEY_LAYOUT_PROFILE).value(layout.profile.name)
+        json.name(KEY_GEOMETRY_PROFILE).value(layout.geometry.wire)
+        json.name(KEY_GRID_ROWS).value(layout.geometry.gridRows.toLong())
+        json.name(KEY_GRID_COLS).value(layout.geometry.gridCols.toLong())
+        json.name(KEY_MODULE_COUNT).value(layout.geometry.moduleCount.toLong())
+        json.name(KEY_PADDING_COUNT).value(layout.geometry.paddingCount.toLong())
+        json.name(KEY_MODULE_ORDER).value(GridPlacement.MODULE_ORDER)
+        json.name(KEY_SAMPLING_INNER_FRACTION).value(GridPlacement.SAMPLING_INNER_FRACTION)
+        writeCommon(
+            json,
+            layout.drawableWidthPx,
+            layout.drawableHeightPx,
+            layout.patternRotationDeg,
+            layout.patternWidthPx,
+            layout.patternHeightPx,
+            layout.patternToDrawable,
+        )
+        json.name(KEY_DYNAMIC_RECT_PX)
+        writeRect(json, layout.dynamicRectPx)
+        json.name(KEY_MODULES).beginArray()
+        for (module in layout.modules) {
+            json.beginObject()
+            json.name(KEY_INDEX).value(module.index.toLong())
+            json.name(KEY_RECT_PX)
+            writeRect(json, module.rectPx)
+            json.endObject()
+        }
+        json.endArray()
+        json.name(KEY_PADDING).beginArray()
+        for (slot in layout.padding) {
+            json.beginObject()
+            json.name(KEY_SLOT_INDEX).value(slot.slotIndex.toLong())
+            json.name(KEY_ROLE).value(ROLE_PADDING)
+            json.name(KEY_RECT_PX)
+            writeRect(json, slot.rectPx)
+            json.name(KEY_LEVEL).value(slot.level.toLong())
+            json.endObject()
+        }
+        json.endArray()
+        json.name(KEY_MARKERS).beginArray()
+        for (marker in layout.markers) writeMarker(json, marker)
+        json.endArray()
+        json.name(KEY_LEVEL_LOW).value(layout.levelLow.toLong())
+        json.name(KEY_LEVEL_HIGH).value(layout.levelHigh.toLong())
+    }
 
     private fun writeLayout(json: JsonWriter, layout: PatternLayout) {
         json.beginObject()

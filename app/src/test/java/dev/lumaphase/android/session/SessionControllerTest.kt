@@ -33,6 +33,81 @@ import org.junit.Test
 class SessionControllerTest {
 
     @Test
+    fun phaseEventForANewTargetUsesTheSegmentOpenedByDisplayStart() {
+        val directory = Files.createTempDirectory("optc-phase-order").toFile()
+        val records = ArrayList<SessionRecord>()
+        val log = SessionLog(directory, serialize = { record -> records += record; line(record) })
+        var now = 1_000_000_000L
+        val controller = SessionController(
+            sessionId = "phase-order",
+            environment = environment(),
+            eventLog = log,
+            clock = { now },
+        )
+        controller.updateSegmentEnvironment(segmentEnvironment())
+        controller.registerLayout(layout("phase-layout", 1080, 2400))
+        controller.startSession()
+        controller.advancePhase(SessionPhase.WARMUP)
+        controller.onDisplayStarted(displayStart("surface-phase", "phase-layout"))
+        // The log writer runs on its own thread, so the records are inspected after the seal
+        // has joined it rather than after an arbitrary delay.
+        controller.stopSession(SessionClosedReason.NORMAL_END)
+        val phase = records.filterIsInstance<ConfigurationEventRecord>()
+            .single { it.eventType == ConfigurationEventType.PHASE_CHANGED && it.details["phase"] == "WARMUP" }
+        assertEquals("0", phase.segmentId)
+        val segmentStart = records.filterIsInstance<ConfigurationEventRecord>()
+            .first { it.eventType == ConfigurationEventType.SEGMENT_STARTED }
+        assertTrue(records.indexOf(segmentStart) < records.indexOf(phase))
+    }
+
+    @Test
+    fun sixRepeatedCalibrationPhasesEachReferenceTheirOwnOpenedSegment() {
+        val directory = Files.createTempDirectory("optc-a-six").toFile()
+        val records = ArrayList<SessionRecord>()
+        val log = SessionLog(directory, serialize = { record -> records += record; line(record) })
+        var now = 1_000_000_000L
+        val controller = SessionController(
+            sessionId = "a-six",
+            environment = environment(),
+            eventLog = log,
+            clock = { now },
+        )
+        controller.updateSegmentEnvironment(segmentEnvironment())
+        controller.startSession()
+        repeat(6) { step ->
+            controller.endSegment(SegmentEndReason.CONFIGURATION_CHANGED)
+            controller.advancePhase(
+                SessionPhase.CALIBRATION,
+                force = true,
+                plannedDurationNs = if (step % 2 == 0) 1_000_000_000L else 3_000_000_000L,
+            )
+            controller.onDisplayStarted(
+                displayStart("surface-a$step", "phase-layout-a$step"),
+            )
+            now += 1_000_000
+        }
+        controller.stopSession(SessionClosedReason.NORMAL_END)
+
+        val starts = records.filterIsInstance<ConfigurationEventRecord>()
+            .filter { it.eventType == ConfigurationEventType.SEGMENT_STARTED }
+        assertEquals(6, starts.size)
+        val phases = records.filterIsInstance<ConfigurationEventRecord>()
+            .filter { it.eventType == ConfigurationEventType.PHASE_CHANGED &&
+                it.details["phase"] == "CALIBRATION" }
+        assertEquals(6, phases.size)
+        phases.forEachIndexed { step, event ->
+            assertEquals(starts[step].segmentId, event.segmentId)
+            assertEquals(
+                if (step % 2 == 0) 1_000_000_000L else 3_000_000_000L,
+                event.details["planned_duration_ns"],
+            )
+        }
+        // No phase event may point at a segment that does not exist in the same export.
+        val segmentIds = starts.mapNotNull { it.segmentId }
+        assertTrue(phases.all { it.segmentId in segmentIds })
+    }
+
+    @Test
     fun aRepresentativeSessionRecordsTheContractRelations() {
         val directory = Files.createTempDirectory("optc-session").toFile()
         val records = ArrayList<SessionRecord>()
