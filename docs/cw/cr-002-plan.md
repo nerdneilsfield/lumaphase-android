@@ -21,7 +21,7 @@
 | Android Tag 诊断、私有手动工站连续 RUN | tab b0f15fd7；ctx_49075be961db | 已本地提交 39069a7 | 180 项测试通过、离线 APK；生命周期修复源码已核，真机另验 |
 | Mac 3 倍 Tag、A/B 诊断与 schema 1.2 会话 | tab 09e8590f；run_8898215d51ec | 已本地提交 50e65f6 | 81 项测试、实际离屏 Metal、生产序列化样例与负例；前台未测 |
 | Android 大 Tag、A/B 诊断与 schema 1.2 会话 | tab b0f15fd7；ctx_f22a5db5969a | 已本地提交 c224aea | 189 项测试、APK 与 merged Manifest；启动、GL 和设备导出未测 |
-| Android RUN 利用上下留白扩大 Tag | tab b0f15fd7；ctx_eecb455c8a38 | 已本地提交 2100f64 | 198 项测试；作者复跑 Builder 图 24/24，sync 独立原尺寸复验中 |
+| Android RUN 利用上下留白扩大 Tag | tab b0f15fd7；ctx_eecb455c8a38 | 已本地提交 2100f64 | 198 项测试；sync 独立原尺寸图全链 24/24 通过 |
 | core 原图 Tag 尺寸和四路摘要 | run_dca836ededc8 | 已本地提交 6479e71；band 提交 092f1a3 | 568 项测试、缺失与重复 Tag 的 PNG 已查看；现场稳定性未测 |
 | schema 1.2 core 读取与历史边界 | run_dca836ededc8 | 已本地提交 eb00ba0 | core 主 agent 独立联合检查 177 项通过，原空历史崩溃返回 INVALID；writer 回报全套 620 项通过 |
 | 原 R4 跨帧序列、R5 时钟参考时间线 | run_dca836ededc8；ctx_c4122ab3f502 | R4 running，R5 queued | 精确整数、多次回绕、掉帧与歧义保留；不平滑时钟阶跃 |
@@ -44,7 +44,7 @@ Android `c224aea` 修正了 Manifest 入口、阶段事件先于建段、尺寸�
 
 用户随后要求在普通 RUN 中利用竖屏长度放大 Tag，并明确要求 sync 支持。Android 新增 F68/C52 大 Tag 网格选项和独立相机预设，原四选项与旧六预设保留。dynamic/modules/padding 坐标与对应旧布局逐矩形相同，只改变 markers。1080×2400 下黑框为 384 px（0°/180°）或 288 px（90°/270°），旧版为 126 px。该布局仍为 OPTC，geometry_profile 和 schema 不变，不能与 CR-002 的独立三倍标定画面混同。
 
-初次跨端图像验证为 20/24；四个横屏大 Tag 图官方检测失败。真实 Builder 随后修正窄带静区与物理外边的对齐，不修改检测阈值或给输入图补边。修正样例 SHA-256 为 `dfdae06854060fa782360eff6951e2e681f09ebfac42110db690983b069ca8ec`，作者复跑为 24/24；sync 独立原尺寸复验仍待回报。原失败输入、报告和日志保留，原 report.json 曾被作者复跑覆盖，未声称恢复该文件。样例仍为 host Gson 序列化及 Builder 像素图，不是设备生产 JsonWriter 字节。
+初次跨端图像验证为 20/24；四个横屏大 Tag 图官方检测失败。真实 Builder 随后修正窄带静区与物理外边的对齐，不修改检测阈值或给输入图补边。修正样例 SHA-256 为 `dfdae06854060fa782360eff6951e2e681f09ebfac42110db690983b069ca8ec`，作者复跑为 24/24，随后 sync 独立原尺寸复验也为 24/24。独立复验未读取 compare 图、未缩放或补边、未改检测阈值；官方检测四 Tag 后逐模块电平、CRC 和 payload 7 均正确，C52 Runner 为 NOT_APPLICABLE。结果位于 `/tmp/lumaphase-android-integration-fixed-independent/report.json`，协调者已核对 passed=24/total=24。原失败输入、报告和日志保留，原 report.json 曾被作者复跑覆盖，未声称恢复该文件。样例仍为 host Gson 序列化及 Builder 像素图，不是设备生产 JsonWriter 字节。
 
 最终 ARM64 APK SHA-256 为 `0127da2a43de98b3afd09b140fd272daa366af024e08cf679132431f6953390d`，64,272,646 bytes。用户用于录制的固定副本 `app/build/outputs/apk/recording/lumaphase-large-tags-arm64-2438acfe.apk` 未覆盖，限定竖屏 0°，其对应几何与最终版一致。运行中采集请使用本次会话导出的真实布局，避免混用新旧预设。
 
